@@ -99,6 +99,36 @@ function createCustomers() {
   return customers;
 }
 
+function configuredCustomers() {
+  const customers = [];
+  if (process.env.TOLNE_API_KEY) {
+    customers.push({
+      name: "test-customer",
+      email: "",
+      api_key: process.env.TOLNE_API_KEY,
+      balance_usd: 1,
+      billing_mode: "prepaid",
+      credit_limit_usd: 0,
+      enabled: true,
+      min_balance_usd: 0.0001
+    });
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    customers.push({
+      name: "OpenRouter",
+      email: process.env.OPENROUTER_BILLING_EMAIL || "support@openrouter.ai",
+      api_key: process.env.OPENROUTER_API_KEY,
+      balance_usd: 0,
+      billing_mode: "postpaid",
+      credit_limit_usd: Number(process.env.OPENROUTER_CREDIT_LIMIT_USD || 100),
+      payment_terms: "Monthly invoice in USD, net 15",
+      enabled: true,
+      min_balance_usd: 0
+    });
+  }
+  return customers;
+}
+
 function normalizeCustomer(customer) {
   const billingMode = customer.billing_mode === "postpaid" ? "postpaid" : "prepaid";
   return {
@@ -116,7 +146,29 @@ function normalizeCustomer(customer) {
 
 function getCustomers() {
   if (!existsSync(CUSTOMERS_PATH)) return createCustomers();
-  return JSON.parse(readFileSync(CUSTOMERS_PATH, "utf8")).map(normalizeCustomer);
+  const customers = JSON.parse(readFileSync(CUSTOMERS_PATH, "utf8")).map(normalizeCustomer);
+  let changed = false;
+  for (const configured of configuredCustomers()) {
+    const existingByName = customers.find((customer) => customer.name === configured.name);
+    const existingByKey = customers.find((customer) => customer.api_key === configured.api_key);
+    if (!existingByName && !existingByKey) {
+      customers.push(normalizeCustomer(configured));
+      changed = true;
+      continue;
+    }
+    if (existingByName && existingByName.api_key !== configured.api_key) {
+      existingByName.api_key = configured.api_key;
+      existingByName.email = configured.email;
+      existingByName.billing_mode = configured.billing_mode;
+      existingByName.credit_limit_usd = configured.credit_limit_usd;
+      existingByName.payment_terms = configured.payment_terms;
+      existingByName.enabled = true;
+      existingByName.min_balance_usd = configured.min_balance_usd;
+      changed = true;
+    }
+  }
+  if (changed) saveCustomers(customers);
+  return customers;
 }
 
 function saveCustomers(customers) {
