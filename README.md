@@ -1,17 +1,15 @@
-# Tolne OpenRouter Provider API
+# Tolne API
 
-Minimal OpenAI-compatible provider API for OpenRouter onboarding.
+This is a minimal OpenAI-compatible API gateway for SiliconFlow.
 
-## Run Locally
+## Setup
 
-```powershell
-npm start
-```
-
-If the Windows Store `node` command is blocked locally, use the bundled Codex runtime:
+1. Copy `.env.example` to `.env`.
+2. Put your SiliconFlow key in `SILICONFLOW_API_KEY`.
+3. Start the local API:
 
 ```powershell
-& "C:\Users\Lenovo\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" server.js
+.\start.ps1
 ```
 
 The server listens on:
@@ -23,62 +21,151 @@ http://localhost:3000
 ## Endpoints
 
 ```text
-GET  /health
-GET  /v1/models
+GET /health
+GET /usage
+GET /v1/models
 POST /v1/chat/completions
-POST /v1/completions
 ```
 
-## Optional Environment Variables
+## Data Files
+
+Runtime data is stored in `data/` by default:
 
 ```text
-PORT=3000
-PROVIDER_KEY=change-me
-MODEL_ID=tolne/tolne-chat
-MODEL_NAME=Tolne: Tolne Chat
-MODEL_CONTEXT_LENGTH=32768
-MODEL_MAX_OUTPUT_LENGTH=4096
-PRICE_PROMPT=0.0000002
-PRICE_COMPLETION=0.0000008
-MODEL_IS_READY=false
+data/customers.json
+data/pricing.json
+data/usage-log.jsonl
+data/payments-log.jsonl
 ```
 
-If `PROVIDER_KEY` is set, requests must include:
+You can change the data folder with `DATA_DIR`.
+
+## Usage Log
+
+Successful chat calls are logged to `data/usage-log.jsonl`. Streaming calls are logged when the upstream returns final usage in the SSE stream.
+
+You can view recent usage with:
 
 ```text
-Authorization: Bearer change-me
+http://localhost:3000/usage
+```
+
+## Customers
+
+Customer API keys and balances are stored in:
+
+```text
+data/customers.json
+```
+
+Each customer has:
+
+```json
+{
+  "name": "test-customer",
+  "api_key": "tolne-test-key",
+  "balance_usd": 1
+}
+```
+
+Successful prepaid chat calls deduct customer balance using `SELL_INPUT_PRICE_PER_1M` and `SELL_OUTPUT_PRICE_PER_1M`. Postpaid customers, such as OpenRouter, are tracked against monthly credit and invoiced from usage logs.
+
+You can manage customers locally at:
+
+```text
+http://localhost:3000/admin.html
+```
+
+OpenRouter postpaid billing is managed at:
+
+```text
+http://localhost:3000/admin/openrouter.html
+```
+
+Monthly invoice CSV:
+
+```text
+http://localhost:3000/admin/invoice.csv?customer=OpenRouter&month=YYYY-MM
+```
+
+Admin and usage pages can be protected with:
+
+```text
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change_this_password
+```
+
+Model-specific prices are stored in:
+
+```text
+data/pricing.json
+```
+
+Manual recharge records are logged to:
+
+```text
+data/payments-log.jsonl
+```
+
+## Production Checklist
+
+Set these environment variables on your server:
+
+```text
+SILICONFLOW_API_KEY
+ADMIN_USERNAME
+ADMIN_PASSWORD
+TOLNE_API_KEY
+OPENROUTER_API_KEY
+OPENROUTER_CREDIT_LIMIT_USD
+PORT
+DATA_DIR
+```
+
+For Render, set `DATA_DIR=/var/data` and attach a persistent disk mounted at `/var/data`. Without a persistent disk, customer keys, balances, usage logs, and invoice records can be lost on restart or redeploy.
+
+Start the service:
+
+```powershell
+node server.js
+```
+
+Check:
+
+```text
+GET /health
+GET /admin.html
+GET /usage.html
+GET /models.html
+GET /docs.html
+GET /playground.html
+POST /v1/chat/completions
+```
+
+## Local Pages
+
+```text
+http://localhost:3000/admin.html
+http://localhost:3000/admin/openrouter.html
+http://localhost:3000/usage.html
+http://localhost:3000/models.html
+http://localhost:3000/docs.html
+http://localhost:3000/onboarding.html
+http://localhost:3000/playground.html
+http://localhost:3000/login.html
+http://localhost:3000/dashboard.html
 ```
 
 ## Test
 
-```powershell
-curl http://localhost:3000/v1/models
-```
+In another PowerShell window:
 
 ```powershell
-curl http://localhost:3000/v1/chat/completions `
-  -H "Content-Type: application/json" `
-  -d "{\"model\":\"tolne/tolne-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":false}"
+.\test-request.ps1
 ```
 
-Streaming:
+## Notes
 
-```powershell
-curl http://localhost:3000/v1/chat/completions `
-  -H "Content-Type: application/json" `
-  -d "{\"model\":\"tolne/tolne-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}"
-```
-
-## Deployment URLs For OpenRouter Form
-
-After deploying behind HTTPS, use:
-
-```text
-https://api.tolne.ai/v1/completions
-https://api.tolne.ai/v1/chat/completions
-https://api.tolne.ai/v1/models
-```
-
-## Next Step
-
-Replace `buildMockCompletion` in `server.js` with a real call to the Tolne inference engine.
+- `SILICONFLOW_API_KEY` is your upstream key. Do not share it.
+- `TOLNE_API_KEY` is optional. If you set it, your customers must call Tolne with `Authorization: Bearer <TOLNE_API_KEY>`.
+- Default upstream base URL is `https://api.siliconflow.cn/v1`.
