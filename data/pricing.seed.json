@@ -1,0 +1,14 @@
+{
+  "Qwen/Qwen2.5-7B-Instruct": {
+    "input_cost_per_1m": 0.05,
+    "output_cost_per_1m": 0.05,
+    "input_sell_per_1m": 0.1,
+    "output_sell_per_1m": 0.1
+  },
+  "deepseek-ai/DeepSeek-V3": {
+    "input_cost_per_1m": 0.25,
+    "output_cost_per_1m": 1,
+    "input_sell_per_1m": 0.5,
+    "output_sell_per_1m": 2
+  }
+}
