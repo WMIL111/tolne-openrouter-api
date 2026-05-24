@@ -44,6 +44,11 @@ function sendError(res, status, code, message, extra = {}) {
   sendJson(res, status, { error: { code, message, ...extra } });
 }
 
+function maskSecret(value) {
+  if (!value) return "";
+  return `${value.slice(0, 18)}...${value.slice(-7)}`;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -468,6 +473,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname.startsWith("/admin") && !checkAdmin(req, res)) return;
+    if (req.method === "GET" && url.pathname === "/admin/debug-config") {
+      sendJson(res, 200, {
+        data_dir: DATA_DIR,
+        has_siliconflow_key: Boolean(process.env.SILICONFLOW_API_KEY),
+        tolne_api_key: maskSecret(process.env.TOLNE_API_KEY || ""),
+        openrouter_api_key: maskSecret(process.env.OPENROUTER_API_KEY || ""),
+        customers: getCustomers().map((customer) => ({
+          name: customer.name,
+          key: maskSecret(customer.api_key || ""),
+          billing_mode: customer.billing_mode,
+          enabled: customer.enabled
+        }))
+      });
+      return;
+    }
     if (req.method === "GET" && (url.pathname === "/admin.html" || url.pathname === "/admin/openrouter.html")) {
       sendAdmin(res);
       return;
