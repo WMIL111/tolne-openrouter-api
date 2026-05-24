@@ -234,13 +234,41 @@ function getModelPricing(model) {
 }
 
 function usdPerToken(pricePer1m) {
-  return Number((Number(pricePer1m || 0) / 1_000_000).toFixed(12));
+  return (Number(pricePer1m || 0) / 1_000_000).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function modelMetadata(model) {
+  const defaults = {
+    name: model,
+    hugging_face_id: model,
+    input_modalities: ["text"],
+    output_modalities: ["text"],
+    quantization: "fp16",
+    context_length: 32768,
+    max_output_length: 4096,
+    supported_sampling_parameters: ["temperature", "top_p", "frequency_penalty", "presence_penalty", "stop", "max_tokens", "seed"],
+    supported_features: ["json_mode"]
+  };
+  const overrides = {
+    "Qwen/Qwen2.5-7B-Instruct": {
+      name: "Tolne: Qwen2.5 7B Instruct",
+      hugging_face_id: "Qwen/Qwen2.5-7B-Instruct"
+    },
+    "deepseek-ai/DeepSeek-V3": {
+      name: "Tolne: DeepSeek V3",
+      hugging_face_id: "deepseek-ai/DeepSeek-V3",
+      context_length: 64000,
+      max_output_length: 8192
+    }
+  };
+  return { ...defaults, ...(overrides[model] || {}) };
 }
 
 function modelsPayload() {
   return {
     object: "list",
     data: Object.entries(getPricing()).map(([model, price]) => ({
+      ...modelMetadata(model),
       id: model,
       object: "model",
       created: 0,
@@ -250,9 +278,11 @@ function modelsPayload() {
       pricing: {
         prompt: usdPerToken(price.input_sell_per_1m),
         completion: usdPerToken(price.output_sell_per_1m),
-        request: 0,
-        image: 0
+        request: "0",
+        image: "0",
+        input_cache_read: "0"
       },
+      datacenters: [{ country_code: "US" }],
       tolne_pricing: {
         input_usd_per_1m_tokens: Number(price.input_sell_per_1m || 0),
         output_usd_per_1m_tokens: Number(price.output_sell_per_1m || 0)
