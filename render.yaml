@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: tolne-api
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: DATA_DIR
+        value: /var/data
+      - key: UPSTREAM_BASE_URL
+        value: https://api.siliconflow.cn/v1
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SILICONFLOW_API_KEY
+        sync: false
+      - key: TOLNE_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_CREDIT_LIMIT_USD
+        value: "100"
+      - key: DEFAULT_MIN_BALANCE_USD
+        value: "0.0001"
+      - key: DEFAULT_RPM_LIMIT
+        value: "60"
+      - key: DEFAULT_DAILY_TOKEN_LIMIT
+        value: "100000"
