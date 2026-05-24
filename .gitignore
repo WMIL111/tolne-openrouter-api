@@ -1,0 +1,8 @@
+.env
+node_modules/
+npm-debug.log*
+
+# Runtime billing/customer data contains API keys and usage records.
+data/customers.json
+data/usage-log.jsonl
+data/payments-log.jsonl
