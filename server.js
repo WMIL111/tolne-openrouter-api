@@ -40,6 +40,14 @@ function sendText(res, status, text, headers = {}) {
   res.end(text);
 }
 
+function sendHtml(res, status, html, headers = {}) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    ...headers
+  });
+  res.end(html);
+}
+
 function sendError(res, status, code, message, extra = {}) {
   sendJson(res, status, { error: { code, message, ...extra } });
 }
@@ -491,6 +499,78 @@ function sendAdmin(res) {
   res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Tolne OpenRouter</title><style>body{font-family:Arial,sans-serif;background:#eef2f6;color:#111827;margin:0;padding:28px}main{max-width:1100px;margin:auto}section{background:white;border:1px solid #d7dde7;border-radius:8px;padding:18px;margin-bottom:16px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #e5e7eb;padding:10px;text-align:left}code{background:#edf3f8;padding:3px 6px;border-radius:5px}a{color:#0e766e}</style></head><body><main><h1>Tolne OpenRouter Billing</h1><section><h2>Account</h2><table><tr><th>Customer</th><th>Billing</th><th>Credit Limit</th><th>Month Charge</th></tr><tr><td>${escapeHtml(openRouter?.name || "missing")}</td><td>${escapeHtml(openRouter?.payment_terms || "")}</td><td>$${Number(openRouter?.credit_limit_usd || 0).toFixed(2)}</td><td>$${summary.charge_usd.toFixed(8)}</td></tr></table></section><section><h2>Provider URLs</h2><p><code>/v1/models</code></p><p><code>/v1/chat/completions</code></p><p><code>/health</code></p></section><section><h2>Prices Per Token</h2><table><thead><tr><th>Model</th><th>Input</th><th>Output</th></tr></thead><tbody>${modelRows}</tbody></table></section><section><h2>Invoice</h2><p><a href="/admin/invoice.csv?customer=OpenRouter&month=${month}">Download ${month} CSV invoice</a></p></section></main></body></html>`);
 }
 
+function sendPrivacy(res) {
+  sendHtml(res, 200, `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tolne Privacy Policy</title>
+  <style>
+    :root{color-scheme:light}
+    body{font-family:Arial,sans-serif;background:#f4f7fb;color:#111827;margin:0;line-height:1.6}
+    main{max-width:860px;margin:0 auto;padding:40px 22px}
+    h1{font-size:34px;line-height:1.15;margin:0 0 8px}
+    h2{font-size:20px;margin:28px 0 8px}
+    p,li{font-size:15px}
+    .meta{color:#4b5563;margin-bottom:28px}
+    section{background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:22px;margin:16px 0}
+    a{color:#0f766e}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tolne Privacy Policy</h1>
+    <p class="meta">Last updated: May 25, 2026</p>
+
+    <section>
+      <h2>Overview</h2>
+      <p>Tolne provides an OpenAI-compatible inference API gateway for model providers and customers. This policy explains how Tolne handles API request data, account information, and usage records.</p>
+    </section>
+
+    <section>
+      <h2>Data We Process</h2>
+      <p>When customers use the Tolne API, Tolne may process API request metadata, model identifiers, timestamps, customer identifiers, token usage, request status, and billing amounts. API prompts and completions pass through the service to complete inference requests.</p>
+    </section>
+
+    <section>
+      <h2>How We Use Data</h2>
+      <ul>
+        <li>To provide model inference responses.</li>
+        <li>To calculate token usage, billing, invoices, limits, and service reliability.</li>
+        <li>To detect abuse, debug failures, and maintain API security.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Training Policy</h2>
+      <p>Tolne does not use customer prompts or completions to train models. Tolne does not sell customer prompt or completion content.</p>
+    </section>
+
+    <section>
+      <h2>Logging and Retention</h2>
+      <p>Tolne keeps operational and billing logs such as token counts, model IDs, timestamps, customer identifiers, request status, and charge calculations. These logs are retained as needed for billing, support, compliance, abuse prevention, and service operation.</p>
+    </section>
+
+    <section>
+      <h2>Subprocessors</h2>
+      <p>Tolne may route inference requests to upstream model infrastructure providers and may use cloud hosting infrastructure to operate the API service. These providers process data only as needed to deliver the service.</p>
+    </section>
+
+    <section>
+      <h2>Security</h2>
+      <p>Tolne uses API keys for authentication and requires customers to keep keys confidential. Customers should not submit sensitive personal data unless required for their own use case.</p>
+    </section>
+
+    <section>
+      <h2>Contact</h2>
+      <p>For privacy or data questions, contact: <a href="mailto:arlindbrahimiei6@gmail.com">arlindbrahimiei6@gmail.com</a></p>
+    </section>
+  </main>
+</body>
+</html>`);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -500,6 +580,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/health") {
       sendJson(res, 200, { ok: true, upstream: UPSTREAM_BASE_URL });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/privacy") {
+      sendPrivacy(res);
       return;
     }
     if (url.pathname.startsWith("/admin") && !checkAdmin(req, res)) return;
