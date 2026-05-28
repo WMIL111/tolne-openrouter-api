@@ -10,5 +10,29 @@
     "output_cost_per_1m": 1,
     "input_sell_per_1m": 0.5,
     "output_sell_per_1m": 2
+  },
+  "deepseek-ai/DeepSeek-V4-Flash": {
+    "input_cost_per_1m": 0.14,
+    "output_cost_per_1m": 0.28,
+    "input_sell_per_1m": 0.2,
+    "output_sell_per_1m": 0.4
+  },
+  "deepseek-ai/DeepSeek-V3.2": {
+    "input_cost_per_1m": 0.27,
+    "output_cost_per_1m": 0.42,
+    "input_sell_per_1m": 0.4,
+    "output_sell_per_1m": 0.65
+  },
+  "Qwen/Qwen3.6-35B-A3B": {
+    "input_cost_per_1m": 0.2,
+    "output_cost_per_1m": 1.6,
+    "input_sell_per_1m": 0.3,
+    "output_sell_per_1m": 2.2
+  },
+  "Qwen/Qwen3.5-9B": {
+    "input_cost_per_1m": 0.1,
+    "output_cost_per_1m": 0.15,
+    "input_sell_per_1m": 0.15,
+    "output_sell_per_1m": 0.25
   }
 }
