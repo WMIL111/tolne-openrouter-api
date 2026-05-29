@@ -3,36 +3,48 @@
     "input_cost_per_1m": 0.05,
     "output_cost_per_1m": 0.05,
     "input_sell_per_1m": 0.1,
-    "output_sell_per_1m": 0.1
+    "output_sell_per_1m": 0.1,
+    "max_output_tokens": 2048,
+    "strategy": "traffic"
   },
   "deepseek-ai/DeepSeek-V3": {
     "input_cost_per_1m": 0.25,
     "output_cost_per_1m": 1,
     "input_sell_per_1m": 0.5,
-    "output_sell_per_1m": 2
+    "output_sell_per_1m": 2,
+    "max_output_tokens": 8192,
+    "strategy": "profit"
   },
   "deepseek-ai/DeepSeek-V4-Flash": {
     "input_cost_per_1m": 0.14,
     "output_cost_per_1m": 0.28,
     "input_sell_per_1m": 0.2,
-    "output_sell_per_1m": 0.4
+    "output_sell_per_1m": 0.4,
+    "max_output_tokens": 4096,
+    "strategy": "traffic"
   },
   "deepseek-ai/DeepSeek-V3.2": {
     "input_cost_per_1m": 0.27,
     "output_cost_per_1m": 0.42,
     "input_sell_per_1m": 0.4,
-    "output_sell_per_1m": 0.65
+    "output_sell_per_1m": 0.65,
+    "max_output_tokens": 8192,
+    "strategy": "balanced"
   },
   "Qwen/Qwen3.6-35B-A3B": {
     "input_cost_per_1m": 0.2,
     "output_cost_per_1m": 1.6,
     "input_sell_per_1m": 0.3,
-    "output_sell_per_1m": 2.2
+    "output_sell_per_1m": 2.2,
+    "max_output_tokens": 8192,
+    "strategy": "profit"
   },
   "Qwen/Qwen3.5-9B": {
     "input_cost_per_1m": 0.1,
     "output_cost_per_1m": 0.15,
     "input_sell_per_1m": 0.15,
-    "output_sell_per_1m": 0.25
+    "output_sell_per_1m": 0.25,
+    "max_output_tokens": 4096,
+    "strategy": "traffic"
   }
 }
