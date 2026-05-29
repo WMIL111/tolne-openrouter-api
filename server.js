@@ -20,6 +20,28 @@ function ensureDataDir() {
   if (!existsSync(PRICING_PATH) && existsSync(PRICING_SEED_PATH)) {
     copyFileSync(PRICING_SEED_PATH, PRICING_PATH);
   }
+  syncPricingSeed();
+}
+
+function syncPricingSeed() {
+  if (!existsSync(PRICING_SEED_PATH)) return;
+  const seed = JSON.parse(readFileSync(PRICING_SEED_PATH, "utf8"));
+  const current = existsSync(PRICING_PATH) ? JSON.parse(readFileSync(PRICING_PATH, "utf8")) : {};
+  let changed = false;
+  for (const [model, seedPrice] of Object.entries(seed)) {
+    const existing = current[model] || {};
+    const merged = { ...seedPrice, ...existing };
+    for (const [field, value] of Object.entries(seedPrice)) {
+      if (existing[field] === undefined) merged[field] = value;
+    }
+    if (JSON.stringify(current[model]) !== JSON.stringify(merged)) {
+      current[model] = merged;
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeFileSync(PRICING_PATH, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+  }
 }
 
 function sendJson(res, status, payload) {
@@ -237,7 +259,9 @@ function getModelPricing(model) {
     input_cost_per_1m: 0,
     output_cost_per_1m: 0,
     input_sell_per_1m: 0,
-    output_sell_per_1m: 0
+    output_sell_per_1m: 0,
+    max_output_tokens: 4096,
+    strategy: "unpriced"
   };
 }
 
@@ -245,7 +269,12 @@ function usdPerToken(pricePer1m) {
   return (Number(pricePer1m || 0) / 1_000_000).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function modelMetadata(model) {
+function marginPercent(sell, cost) {
+  if (!Number(sell)) return 0;
+  return Number((((Number(sell) - Number(cost || 0)) / Number(sell)) * 100).toFixed(2));
+}
+
+function modelMetadata(model, price = getModelPricing(model)) {
   const defaults = {
     name: model,
     hugging_face_id: model,
@@ -267,16 +296,36 @@ function modelMetadata(model) {
       hugging_face_id: "deepseek-ai/DeepSeek-V3",
       context_length: 64000,
       max_output_length: 8192
+    },
+    "deepseek-ai/DeepSeek-V4-Flash": {
+      name: "Tolne: DeepSeek V4 Flash",
+      hugging_face_id: "deepseek-ai/DeepSeek-V4-Flash"
+    },
+    "deepseek-ai/DeepSeek-V3.2": {
+      name: "Tolne: DeepSeek V3.2",
+      hugging_face_id: "deepseek-ai/DeepSeek-V3.2",
+      context_length: 64000,
+      max_output_length: 8192
+    },
+    "Qwen/Qwen3.6-35B-A3B": {
+      name: "Tolne: Qwen3.6 35B A3B",
+      hugging_face_id: "Qwen/Qwen3.6-35B-A3B"
+    },
+    "Qwen/Qwen3.5-9B": {
+      name: "Tolne: Qwen3.5 9B",
+      hugging_face_id: "Qwen/Qwen3.5-9B"
     }
   };
-  return { ...defaults, ...(overrides[model] || {}) };
+  const metadata = { ...defaults, ...(overrides[model] || {}) };
+  if (price.max_output_tokens) metadata.max_output_length = Number(price.max_output_tokens);
+  return metadata;
 }
 
 function modelsPayload() {
   return {
     object: "list",
     data: Object.entries(getPricing()).map(([model, price]) => ({
-      ...modelMetadata(model),
+      ...modelMetadata(model, price),
       id: model,
       object: "model",
       created: 0,
@@ -293,7 +342,13 @@ function modelsPayload() {
       datacenters: [{ country_code: "US" }],
       tolne_pricing: {
         input_usd_per_1m_tokens: Number(price.input_sell_per_1m || 0),
-        output_usd_per_1m_tokens: Number(price.output_sell_per_1m || 0)
+        output_usd_per_1m_tokens: Number(price.output_sell_per_1m || 0),
+        input_cost_usd_per_1m_tokens: Number(price.input_cost_per_1m || 0),
+        output_cost_usd_per_1m_tokens: Number(price.output_cost_per_1m || 0),
+        input_margin_percent: marginPercent(price.input_sell_per_1m, price.input_cost_per_1m),
+        output_margin_percent: marginPercent(price.output_sell_per_1m, price.output_cost_per_1m),
+        strategy: price.strategy || "balanced",
+        max_output_tokens: Number(price.max_output_tokens || modelMetadata(model, price).max_output_length || 4096)
       }
     }))
   };
@@ -326,6 +381,68 @@ function summarize(rows) {
 
 function getMonthRows(customerName, month = monthKey()) {
   return readUsageRows().filter((row) => row.customer === customerName && String(row.timestamp || "").startsWith(month));
+}
+
+function getRecentRows(days = 1, customerName = "") {
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+  return readUsageRows().filter((row) => {
+    const timestamp = Date.parse(row.timestamp || "");
+    if (!Number.isFinite(timestamp) || timestamp < since) return false;
+    return !customerName || row.customer === customerName;
+  });
+}
+
+function summarizeByModel(rows) {
+  const pricing = getPricing();
+  const byModel = new Map();
+  for (const row of rows) {
+    const model = row.model || "unknown";
+    if (!byModel.has(model)) {
+      byModel.set(model, {
+        model,
+        strategy: pricing[model]?.strategy || "unknown",
+        calls: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        cost_usd: 0,
+        charge_usd: 0,
+        profit_usd: 0
+      });
+    }
+    const item = byModel.get(model);
+    item.calls += 1;
+    item.input_tokens += Number(row.prompt_tokens || 0);
+    item.output_tokens += Number(row.completion_tokens || 0);
+    item.total_tokens += Number(row.total_tokens || 0);
+    item.cost_usd += Number(row.total_cost_usd || 0);
+    item.charge_usd += Number(row.total_charge_usd || 0);
+    item.profit_usd += Number(row.total_charge_usd || 0) - Number(row.total_cost_usd || 0);
+  }
+  return Array.from(byModel.values())
+    .map((item) => ({
+      ...item,
+      margin_percent: item.charge_usd ? Number(((item.profit_usd / item.charge_usd) * 100).toFixed(2)) : 0,
+      avg_profit_per_call_usd: item.calls ? Number((item.profit_usd / item.calls).toFixed(10)) : 0
+    }))
+    .sort((a, b) => b.profit_usd - a.profit_usd);
+}
+
+function profitReport(customerName = "OpenRouter") {
+  const month = monthKey();
+  const monthRows = getMonthRows(customerName, month);
+  const dayRows = getRecentRows(1, customerName);
+  const weekRows = getRecentRows(7, customerName);
+  return {
+    customer: customerName,
+    month,
+    today: summarize(dayRows),
+    week: summarize(weekRows),
+    month_summary: summarize(monthRows),
+    by_model_today: summarizeByModel(dayRows),
+    by_model_week: summarizeByModel(weekRows),
+    by_model_month: summarizeByModel(monthRows)
+  };
 }
 
 function getAvailableCredit(customer) {
@@ -370,6 +487,7 @@ function recordUsage(req, requestBody, responseBody) {
     prompt_tokens: responseBody.usage.prompt_tokens || 0,
     completion_tokens: responseBody.usage.completion_tokens || 0,
     total_tokens: responseBody.usage.total_tokens || 0,
+    max_tokens: requestBody.max_tokens || null,
     billing_mode: customer.billing_mode,
     balance_usd_after: customer.balance_usd,
     ...billing
@@ -394,6 +512,21 @@ function parseStreamingUsage(text, fallbackModel) {
   return usage ? { model, usage } : null;
 }
 
+function applyModelTokenLimit(body) {
+  const price = getModelPricing(body.model);
+  const metadata = modelMetadata(body.model, price);
+  const limit = Number(price.max_output_tokens || metadata.max_output_length || 4096);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+  const requested = Number(body.max_tokens);
+  if (body.max_tokens === undefined || body.max_tokens === null || !Number.isFinite(requested) || requested <= 0) {
+    body.max_tokens = Math.min(1024, limit);
+    return;
+  }
+  if (requested > limit) {
+    body.max_tokens = limit;
+  }
+}
+
 async function proxyChat(req, res, rawBody) {
   if (!process.env.SILICONFLOW_API_KEY) {
     sendError(res, 500, "missing_upstream_key", "Missing SILICONFLOW_API_KEY.");
@@ -410,6 +543,7 @@ async function proxyChat(req, res, rawBody) {
     sendError(res, 400, "invalid_chat_request", "Request must include model and messages array.");
     return;
   }
+  applyModelTokenLimit(body);
   if (body.stream === true) {
     body.stream_options = { ...(body.stream_options || {}), include_usage: true };
   }
@@ -490,13 +624,21 @@ function invoiceCsv(customerName, month) {
   return [header, ...data].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
 }
 
+function formatUsd(value, digits = 8) {
+  return `$${Number(value || 0).toFixed(digits)}`;
+}
+
 function sendAdmin(res) {
   const openRouter = getCustomers().find((customer) => customer.name.toLowerCase() === "openrouter");
   const month = monthKey();
-  const summary = openRouter ? summarize(getMonthRows(openRouter.name, month)) : summarize([]);
-  const modelRows = Object.entries(getPricing()).map(([model, price]) => `<tr><td><code>${escapeHtml(model)}</code></td><td>${usdPerToken(price.input_sell_per_1m)}</td><td>${usdPerToken(price.output_sell_per_1m)}</td></tr>`).join("");
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Tolne OpenRouter</title><style>body{font-family:Arial,sans-serif;background:#eef2f6;color:#111827;margin:0;padding:28px}main{max-width:1100px;margin:auto}section{background:white;border:1px solid #d7dde7;border-radius:8px;padding:18px;margin-bottom:16px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #e5e7eb;padding:10px;text-align:left}code{background:#edf3f8;padding:3px 6px;border-radius:5px}a{color:#0e766e}</style></head><body><main><h1>Tolne OpenRouter Billing</h1><section><h2>Account</h2><table><tr><th>Customer</th><th>Billing</th><th>Credit Limit</th><th>Month Charge</th></tr><tr><td>${escapeHtml(openRouter?.name || "missing")}</td><td>${escapeHtml(openRouter?.payment_terms || "")}</td><td>$${Number(openRouter?.credit_limit_usd || 0).toFixed(2)}</td><td>$${summary.charge_usd.toFixed(8)}</td></tr></table></section><section><h2>Provider URLs</h2><p><code>/v1/models</code></p><p><code>/v1/chat/completions</code></p><p><code>/health</code></p></section><section><h2>Prices Per Token</h2><table><thead><tr><th>Model</th><th>Input</th><th>Output</th></tr></thead><tbody>${modelRows}</tbody></table></section><section><h2>Invoice</h2><p><a href="/admin/invoice.csv?customer=OpenRouter&month=${month}">Download ${month} CSV invoice</a></p></section></main></body></html>`);
+  const report = openRouter ? profitReport(openRouter.name) : profitReport("");
+  const summary = report.month_summary;
+  const modelRows = Object.entries(getPricing()).map(([model, price]) => {
+    const metadata = modelMetadata(model, price);
+    return `<tr><td><code>${escapeHtml(model)}</code></td><td>${escapeHtml(price.strategy || "balanced")}</td><td>${Number(price.max_output_tokens || metadata.max_output_length || 0)}</td><td>${usdPerToken(price.input_sell_per_1m)}</td><td>${usdPerToken(price.output_sell_per_1m)}</td><td>${marginPercent(price.input_sell_per_1m, price.input_cost_per_1m)}%</td><td>${marginPercent(price.output_sell_per_1m, price.output_cost_per_1m)}%</td></tr>`;
+  }).join("");
+  const profitRows = (report.by_model_month.length ? report.by_model_month : summarizeByModel([])).map((row) => `<tr><td><code>${escapeHtml(row.model)}</code></td><td>${escapeHtml(row.strategy)}</td><td>${row.calls}</td><td>${row.input_tokens}</td><td>${row.output_tokens}</td><td>${formatUsd(row.cost_usd)}</td><td>${formatUsd(row.charge_usd)}</td><td>${formatUsd(row.profit_usd)}</td><td>${row.margin_percent}%</td></tr>`).join("");
+  sendHtml(res, 200, `<!doctype html><html><head><meta charset="utf-8"><title>Tolne OpenRouter</title><style>body{font-family:Arial,sans-serif;background:#eef2f6;color:#111827;margin:0;padding:28px}main{max-width:1200px;margin:auto}section{background:white;border:1px solid #d7dde7;border-radius:8px;padding:18px;margin-bottom:16px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #e5e7eb;padding:10px;text-align:left;vertical-align:top}code{background:#edf3f8;padding:3px 6px;border-radius:5px}a{color:#0e766e}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px}.metric b{display:block;font-size:20px;margin-top:4px}.muted{color:#64748b}</style></head><body><main><h1>Tolne OpenRouter Billing</h1><section><h2>Account</h2><table><tr><th>Customer</th><th>Billing</th><th>Credit Limit</th><th>Month Charge</th><th>Month Profit</th></tr><tr><td>${escapeHtml(openRouter?.name || "missing")}</td><td>${escapeHtml(openRouter?.payment_terms || "")}</td><td>$${Number(openRouter?.credit_limit_usd || 0).toFixed(2)}</td><td>${formatUsd(summary.charge_usd)}</td><td>${formatUsd(summary.profit_usd)}</td></tr></table></section><section><h2>Profit Snapshot</h2><div class="grid"><div class="metric"><span class="muted">Today calls</span><b>${report.today.calls}</b></div><div class="metric"><span class="muted">Today profit</span><b>${formatUsd(report.today.profit_usd)}</b></div><div class="metric"><span class="muted">7 day profit</span><b>${formatUsd(report.week.profit_usd)}</b></div><div class="metric"><span class="muted">Month profit</span><b>${formatUsd(summary.profit_usd)}</b></div></div></section><section><h2>Model Profit This Month</h2><table><thead><tr><th>Model</th><th>Strategy</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost</th><th>Charge</th><th>Profit</th><th>Margin</th></tr></thead><tbody>${profitRows || `<tr><td colspan="9" class="muted">No usage yet.</td></tr>`}</tbody></table></section><section><h2>Provider URLs</h2><p><code>/v1/models</code></p><p><code>/v1/chat/completions</code></p><p><code>/v1/completions</code></p><p><code>/admin/profit.json</code></p></section><section><h2>Prices And Risk Limits</h2><table><thead><tr><th>Model</th><th>Strategy</th><th>Max Output</th><th>Input/token</th><th>Output/token</th><th>Input Margin</th><th>Output Margin</th></tr></thead><tbody>${modelRows}</tbody></table></section><section><h2>Invoice</h2><p><a href="/admin/invoice.csv?customer=OpenRouter&month=${month}">Download ${month} CSV invoice</a></p></section></main></body></html>`);
 }
 
 function sendPrivacy(res) {
@@ -600,6 +742,11 @@ const server = http.createServer(async (req, res) => {
           enabled: customer.enabled
         }))
       });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/admin/profit.json") {
+      const customer = url.searchParams.get("customer") || "OpenRouter";
+      sendJson(res, 200, profitReport(customer));
       return;
     }
     if (req.method === "GET" && (url.pathname === "/admin.html" || url.pathname === "/admin/openrouter.html")) {
