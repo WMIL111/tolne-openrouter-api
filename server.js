@@ -321,36 +321,41 @@ function modelMetadata(model, price = getModelPricing(model)) {
   return metadata;
 }
 
-function modelsPayload() {
+function modelsPayload({ includeInternal = false } = {}) {
   return {
     object: "list",
-    data: Object.entries(getPricing()).map(([model, price]) => ({
-      ...modelMetadata(model, price),
-      id: model,
-      object: "model",
-      created: 0,
-      owned_by: "tolne",
-      is_ready: price.is_ready !== false,
-      supports_streaming: true,
-      pricing: {
-        prompt: usdPerToken(price.input_sell_per_1m),
-        completion: usdPerToken(price.output_sell_per_1m),
-        request: "0",
-        image: "0",
-        input_cache_read: "0"
-      },
-      datacenters: [{ country_code: "US" }],
-      tolne_pricing: {
-        input_usd_per_1m_tokens: Number(price.input_sell_per_1m || 0),
-        output_usd_per_1m_tokens: Number(price.output_sell_per_1m || 0),
-        input_cost_usd_per_1m_tokens: Number(price.input_cost_per_1m || 0),
-        output_cost_usd_per_1m_tokens: Number(price.output_cost_per_1m || 0),
-        input_margin_percent: marginPercent(price.input_sell_per_1m, price.input_cost_per_1m),
-        output_margin_percent: marginPercent(price.output_sell_per_1m, price.output_cost_per_1m),
-        strategy: price.strategy || "balanced",
-        max_output_tokens: Number(price.max_output_tokens || modelMetadata(model, price).max_output_length || 4096)
+    data: Object.entries(getPricing()).map(([model, price]) => {
+      const payload = {
+        ...modelMetadata(model, price),
+        id: model,
+        object: "model",
+        created: 0,
+        owned_by: "tolne",
+        is_ready: price.is_ready !== false,
+        supports_streaming: true,
+        pricing: {
+          prompt: usdPerToken(price.input_sell_per_1m),
+          completion: usdPerToken(price.output_sell_per_1m),
+          request: "0",
+          image: "0",
+          input_cache_read: "0"
+        },
+        datacenters: [{ country_code: "US" }]
+      };
+      if (includeInternal) {
+        payload.tolne_internal = {
+          input_usd_per_1m_tokens: Number(price.input_sell_per_1m || 0),
+          output_usd_per_1m_tokens: Number(price.output_sell_per_1m || 0),
+          input_cost_usd_per_1m_tokens: Number(price.input_cost_per_1m || 0),
+          output_cost_usd_per_1m_tokens: Number(price.output_cost_per_1m || 0),
+          input_margin_percent: marginPercent(price.input_sell_per_1m, price.input_cost_per_1m),
+          output_margin_percent: marginPercent(price.output_sell_per_1m, price.output_cost_per_1m),
+          strategy: price.strategy || "balanced",
+          max_output_tokens: Number(price.max_output_tokens || modelMetadata(model, price).max_output_length || 4096)
+        };
       }
-    }))
+      return payload;
+    })
   };
 }
 
