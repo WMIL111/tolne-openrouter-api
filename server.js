@@ -1,94 +1,391 @@
 import http from "node:http";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync
+} from "node:fs";
 import path from "node:path";
 
-const PORT=Number(process.env.PORT||3000);
-const DATA_DIR=process.env.DATA_DIR||"data";
-const UPSTREAM_BASE_URL=process.env.UPSTREAM_BASE_URL||"https://api.siliconflow.cn/v1";
-const PUBLIC_BASE_URL=process.env.PUBLIC_BASE_URL||"https://tolne-openrouter-api-1.onrender.com";
-const CUSTOMERS_PATH=path.join(DATA_DIR,"customers.json");
-const PRICING_PATH=path.join(DATA_DIR,"pricing.json");
-const USAGE_LOG_PATH=path.join(DATA_DIR,"usage-log.jsonl");
-const ERROR_LOG_PATH=path.join(DATA_DIR,"error-log.jsonl");
-const HEALTH_STATUS_PATH=path.join(DATA_DIR,"provider-health.json");
-const PRICING_SEED_PATH=path.join("data","pricing.seed.json");
-const ADMIN_USERNAME=process.env.ADMIN_USERNAME||"admin";
-const ADMIN_PASSWORD=process.env.ADMIN_PASSWORD||"";
-const RATE_WINDOWS=new Map();
+const PORT = Number(process.env.PORT || 3000);
+const DATA_DIR = process.env.DATA_DIR || "data";
+const PUBLIC_DIR = path.join(process.cwd(), "public");
+const UPSTREAM_BASE_URL = process.env.UPSTREAM_BASE_URL || "https://api.siliconflow.cn/v1";
+const CUSTOMERS_PATH = path.join(DATA_DIR, "customers.json");
+const PRICING_PATH = path.join(DATA_DIR, "pricing.json");
+const USAGE_LOG_PATH = path.join(DATA_DIR, "usage-log.jsonl");
+const ERROR_LOG_PATH = path.join(DATA_DIR, "error-log.jsonl");
+const PRICING_SEED_PATH = path.join("data", "pricing.seed.json");
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 
-ensureDataDir();
-function ensureDataDir(){mkdirSync(DATA_DIR,{recursive:true});if(!existsSync(PRICING_PATH)&&existsSync(PRICING_SEED_PATH))copyFileSync(PRICING_SEED_PATH,PRICING_PATH);syncPricingSeed();}
-function syncPricingSeed(){if(!existsSync(PRICING_SEED_PATH))return;const seed=JSON.parse(readFileSync(PRICING_SEED_PATH,"utf8"));const current=existsSync(PRICING_PATH)?JSON.parse(readFileSync(PRICING_PATH,"utf8")):{};let changed=false;for(const [model,seedPrice] of Object.entries(seed)){const existing=current[model]||{};const merged={...seedPrice,...existing};for(const [field,value] of Object.entries(seedPrice))if(existing[field]===undefined)merged[field]=value;if(JSON.stringify(current[model])!==JSON.stringify(merged)){current[model]=merged;changed=true;}}if(changed)savePricing(current);}
-function sendJson(res,status,payload){res.writeHead(status,{"Content-Type":"application/json; charset=utf-8","Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"Authorization, Content-Type","Access-Control-Allow-Methods":"GET, POST, OPTIONS"});res.end(JSON.stringify(payload,null,2));}
-function sendText(res,status,text,headers={}){res.writeHead(status,{"Content-Type":"text/plain; charset=utf-8",...headers});res.end(text);}
-function sendHtml(res,status,html,headers={}){res.writeHead(status,{"Content-Type":"text/html; charset=utf-8",...headers});res.end(html);}
-function cleanLogValue(value){if(value===undefined)return undefined;if(value===null||typeof value==="number"||typeof value==="boolean")return value;if(typeof value==="string")return value.length>500?`${value.slice(0,500)}...`:value;if(Array.isArray(value))return value.slice(0,20).map(cleanLogValue);if(typeof value==="object"){const out={};for(const [key,item] of Object.entries(value)){if(/key|token|authorization|password|secret/i.test(key))continue;out[key]=cleanLogValue(item);}return out;}return String(value);}
-function recordError({status,code,message,extra={},model="",customer=""}){try{appendFileSync(ERROR_LOG_PATH,`${JSON.stringify({timestamp:new Date().toISOString(),status,code,message,model:model||extra.model||"",customer:customer||extra.customer||"",extra:cleanLogValue(extra)})}\n`,"utf8");}catch{}}
-function sendError(res,status,code,message,extra={}){recordError({status,code,message,extra});sendJson(res,status,{error:{code,message,...extra}});}
-function maskSecret(value){return value?`${value.slice(0,18)}...${value.slice(-7)}`:"";}
-function readBody(req){return new Promise((resolve,reject)=>{let body="";req.on("data",chunk=>{body+=chunk;if(body.length>10*1024*1024){reject(new Error("Request body too large"));req.destroy();}});req.on("end",()=>resolve(body));req.on("error",reject);});}
-function escapeHtml(value){return String(value??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");}
+ensureData();
 
-function defaultRateLimits(name=""){const normalized=String(name).toLowerCase();if(normalized==="openrouter")return{rpm:Number(process.env.OPENROUTER_RPM_LIMIT||800),tpm:Number(process.env.OPENROUTER_TPM_LIMIT||2000000),daily_cost_limit_usd:Number(process.env.OPENROUTER_DAILY_COST_LIMIT_USD||150),warning_costs_usd:[30,75,120]};if(normalized.includes("test"))return{rpm:30,tpm:50000,daily_cost_limit_usd:2,warning_costs_usd:[1.5]};return{rpm:120,tpm:300000,daily_cost_limit_usd:20,warning_costs_usd:[5,10,16]};}
-function defaultCreditLimit(name=""){return String(name).toLowerCase()==="openrouter"?Math.max(Number(process.env.OPENROUTER_CREDIT_LIMIT_USD||3000),3000):0;}
-function normalizeRateLimits(customer){const d=defaultRateLimits(customer.name);const c=customer.rate_limits||{};return{rpm:Number(c.rpm??d.rpm),tpm:Number(c.tpm??d.tpm),daily_cost_limit_usd:Number(c.daily_cost_limit_usd??d.daily_cost_limit_usd),warning_costs_usd:Array.isArray(c.warning_costs_usd)?c.warning_costs_usd.map(Number):d.warning_costs_usd};}
-function configuredCustomers(){const customers=[];if(process.env.TOLNE_API_KEY)customers.push({name:"test-customer",email:"",api_key:process.env.TOLNE_API_KEY,balance_usd:1,billing_mode:"prepaid",credit_limit_usd:0,enabled:true,min_balance_usd:0.0001,rate_limits:defaultRateLimits("test-customer")});if(process.env.OPENROUTER_API_KEY)customers.push({name:"OpenRouter",email:process.env.OPENROUTER_BILLING_EMAIL||"support@openrouter.ai",api_key:process.env.OPENROUTER_API_KEY,balance_usd:0,billing_mode:"postpaid",credit_limit_usd:defaultCreditLimit("OpenRouter"),payment_terms:"Monthly invoice in USD, net 15",enabled:true,min_balance_usd:0,rate_limits:defaultRateLimits("OpenRouter")});return customers;}
-function createCustomers(){const customers=configuredCustomers();writeFileSync(CUSTOMERS_PATH,`${JSON.stringify(customers,null,2)}\n`,"utf8");return customers;}
-function normalizeCustomer(customer){const billingMode=customer.billing_mode==="postpaid"?"postpaid":"prepaid";const name=customer.name||"customer";return{name,email:customer.email||"",api_key:customer.api_key,balance_usd:Number(customer.balance_usd||0),billing_mode:billingMode,credit_limit_usd:Math.max(Number(customer.credit_limit_usd||0),defaultCreditLimit(name)),payment_terms:customer.payment_terms||(billingMode==="postpaid"?"Monthly invoice in USD, net 15":"Prepaid balance"),enabled:customer.enabled!==false,min_balance_usd:Number(customer.min_balance_usd??0.0001),rate_limits:normalizeRateLimits(customer)};}
-function getCustomers(){if(!existsSync(CUSTOMERS_PATH))return createCustomers();const customers=JSON.parse(readFileSync(CUSTOMERS_PATH,"utf8")).map(normalizeCustomer);let changed=false;for(const configured of configuredCustomers()){const byName=customers.find(c=>c.name===configured.name);const byKey=customers.find(c=>c.api_key===configured.api_key);if(!byName&&!byKey){customers.push(normalizeCustomer(configured));changed=true;continue;}if(byName&&byName.api_key!==configured.api_key){Object.assign(byName,{api_key:configured.api_key,email:configured.email,billing_mode:configured.billing_mode,credit_limit_usd:configured.credit_limit_usd,payment_terms:configured.payment_terms,enabled:true,min_balance_usd:configured.min_balance_usd,rate_limits:configured.rate_limits});changed=true;}}if(changed)saveCustomers(customers);return customers;}
-function saveCustomers(customers){writeFileSync(CUSTOMERS_PATH,`${JSON.stringify(customers,null,2)}\n`,"utf8");}
-function parseBearer(req){const auth=req.headers.authorization||"";return auth.startsWith("Bearer ")?auth.slice("Bearer ".length):"";}
-function findCustomer(req){const key=parseBearer(req);return key?getCustomers().find(customer=>customer.api_key===key)||null:null;}
-function getPricing(){return existsSync(PRICING_PATH)?JSON.parse(readFileSync(PRICING_PATH,"utf8")):{};}
-function savePricing(pricing){writeFileSync(PRICING_PATH,`${JSON.stringify(pricing,null,2)}\n`,"utf8");}
-function getModelPricing(model){return getPricing()[model]||{input_cost_per_1m:0,output_cost_per_1m:0,input_sell_per_1m:0,output_sell_per_1m:0,max_output_tokens:4096,strategy:"unpriced"};}
-function usdPerToken(pricePer1m){return(Number(pricePer1m||0)/1000000).toFixed(12).replace(/0+$/," ").trim().replace(/\.$/,"");}
-function marginPercent(sell,cost){return Number(sell)?Number((((Number(sell)-Number(cost||0))/Number(sell))*100).toFixed(2)):0;}
-function modelMetadata(model,price=getModelPricing(model)){const defaults={name:model,hugging_face_id:model,input_modalities:["text"],output_modalities:["text"],quantization:"fp16",context_length:32768,max_output_length:4096,supported_sampling_parameters:["temperature","top_p","frequency_penalty","presence_penalty","stop","max_tokens","seed"],supported_features:["json_mode"]};const overrides={"Qwen/Qwen2.5-7B-Instruct":{name:"Tolne: Qwen2.5 7B Instruct"},"deepseek-ai/DeepSeek-V3":{name:"Tolne: DeepSeek V3",context_length:64000,max_output_length:8192},"deepseek-ai/DeepSeek-V4-Flash":{name:"Tolne: DeepSeek V4 Flash"},"deepseek-ai/DeepSeek-V3.2":{name:"Tolne: DeepSeek V3.2",context_length:64000,max_output_length:8192},"Qwen/Qwen3.6-35B-A3B":{name:"Tolne: Qwen3.6 35B A3B"},"Qwen/Qwen3.5-9B":{name:"Tolne: Qwen3.5 9B"}};const metadata={...defaults,...(overrides[model]||{}),hugging_face_id:model};if(price.max_output_tokens)metadata.max_output_length=Number(price.max_output_tokens);return metadata;}
-function modelsPayload({includeInternal=false}={}){return{object:"list",data:Object.entries(getPricing()).filter(([,price])=>price.is_ready!==false).map(([model,price])=>{const payload={...modelMetadata(model,price),id:model,object:"model",created:0,owned_by:"tolne",is_ready:true,supports_streaming:true,pricing:{prompt:usdPerToken(price.input_sell_per_1m),completion:usdPerToken(price.output_sell_per_1m),request:"0",image:"0",input_cache_read:"0"},datacenters:[{country_code:"US"}]};if(includeInternal)payload.tolne_internal={input_usd_per_1m_tokens:Number(price.input_sell_per_1m||0),output_usd_per_1m_tokens:Number(price.output_sell_per_1m||0),input_cost_usd_per_1m_tokens:Number(price.input_cost_per_1m||0),output_cost_usd_per_1m_tokens:Number(price.output_cost_per_1m||0),input_margin_percent:marginPercent(price.input_sell_per_1m,price.input_cost_per_1m),output_margin_percent:marginPercent(price.output_sell_per_1m,price.output_cost_per_1m),strategy:price.strategy||"balanced",max_output_tokens:Number(price.max_output_tokens||modelMetadata(model,price).max_output_length||4096)};return payload;})};}
+function ensureData() {
+  mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(PRICING_PATH) && existsSync(PRICING_SEED_PATH)) {
+    copyFileSync(PRICING_SEED_PATH, PRICING_PATH);
+  }
+  if (!existsSync(PRICING_PATH)) {
+    writeFileSync(PRICING_PATH, `${JSON.stringify(defaultPricing(), null, 2)}\n`, "utf8");
+  }
+}
 
-function monthKey(date=new Date()){return date.toISOString().slice(0,7);}function dayKey(date=new Date()){return date.toISOString().slice(0,10);}
-function readJsonl(file){if(!existsSync(file))return[];return readFileSync(file,"utf8").split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));}
-function readUsageRows(){return readJsonl(USAGE_LOG_PATH);}function readErrorRows(){return readJsonl(ERROR_LOG_PATH);}
-function filterRows(rows,{q="",days=7,limit=100}={}){const needle=String(q||"").trim().toLowerCase();const since=Date.now()-Number(days||7)*86400000;return rows.filter(row=>{const ts=Date.parse(row.timestamp||"");if(Number.isFinite(ts)&&ts<since)return false;return!needle||JSON.stringify(row).toLowerCase().includes(needle);}).sort((a,b)=>String(b.timestamp||"").localeCompare(String(a.timestamp||""))).slice(0,Math.max(1,Math.min(Number(limit||100),500)));}
-function summarize(rows){return rows.reduce((out,row)=>{out.calls++;out.input_tokens+=Number(row.prompt_tokens||0);out.output_tokens+=Number(row.completion_tokens||0);out.total_tokens+=Number(row.total_tokens||0);out.cost_usd+=Number(row.total_cost_usd||0);out.charge_usd+=Number(row.total_charge_usd||0);out.profit_usd+=Number(row.total_charge_usd||0)-Number(row.total_cost_usd||0);return out;},{calls:0,input_tokens:0,output_tokens:0,total_tokens:0,cost_usd:0,charge_usd:0,profit_usd:0});}
-function getMonthRows(customerName,month=monthKey()){return readUsageRows().filter(row=>row.customer===customerName&&String(row.timestamp||"").startsWith(month));}
-function getDayRows(customerName,day=dayKey()){return readUsageRows().filter(row=>row.customer===customerName&&String(row.timestamp||"").startsWith(day));}
-function getRecentRows(days=1,customerName=""){const since=Date.now()-days*86400000;return readUsageRows().filter(row=>{const ts=Date.parse(row.timestamp||"");return Number.isFinite(ts)&&ts>=since&&(!customerName||row.customer===customerName);});}
-function countBy(rows,field){const counts=new Map();for(const row of rows){const key=String(row[field]||"unknown");counts.set(key,(counts.get(key)||0)+1);}return Array.from(counts.entries()).map(([key,count])=>({key,count})).sort((a,b)=>b.count-a.count);}
-function errorStats(days=7){const rows=filterRows(readErrorRows(),{days,limit:500});return{days:Number(days||7),total:rows.length,by_code:countBy(rows,"code"),by_status:countBy(rows,"status"),by_model:countBy(rows.filter(row=>row.model),"model"),recent:rows.slice(0,20)};}
-function summarizeByModel(rows){const pricing=getPricing();const byModel=new Map();for(const row of rows){const model=row.model||"unknown";if(!byModel.has(model))byModel.set(model,{model,strategy:pricing[model]?.strategy||"unknown",calls:0,input_tokens:0,output_tokens:0,total_tokens:0,cost_usd:0,charge_usd:0,profit_usd:0});const item=byModel.get(model);item.calls++;item.input_tokens+=Number(row.prompt_tokens||0);item.output_tokens+=Number(row.completion_tokens||0);item.total_tokens+=Number(row.total_tokens||0);item.cost_usd+=Number(row.total_cost_usd||0);item.charge_usd+=Number(row.total_charge_usd||0);item.profit_usd+=Number(row.total_charge_usd||0)-Number(row.total_cost_usd||0);}return Array.from(byModel.values()).map(item=>({...item,margin_percent:item.charge_usd?Number(((item.profit_usd/item.charge_usd)*100).toFixed(2)):0,avg_profit_per_call_usd:item.calls?Number((item.profit_usd/item.calls).toFixed(10)):0})).sort((a,b)=>b.profit_usd-a.profit_usd);}
-function dailyProfitReport(customerName="OpenRouter",days=14){const since=Date.now()-Number(days||14)*86400000;const byDay=new Map();for(const row of readUsageRows()){const ts=Date.parse(row.timestamp||"");if(!Number.isFinite(ts)||ts<since)continue;if(customerName&&row.customer!==customerName)continue;const day=String(row.timestamp||"").slice(0,10);if(!byDay.has(day))byDay.set(day,{day,calls:0,input_tokens:0,output_tokens:0,total_tokens:0,cost_usd:0,charge_usd:0,profit_usd:0});const item=byDay.get(day);item.calls++;item.input_tokens+=Number(row.prompt_tokens||0);item.output_tokens+=Number(row.completion_tokens||0);item.total_tokens+=Number(row.total_tokens||0);item.cost_usd+=Number(row.total_cost_usd||0);item.charge_usd+=Number(row.total_charge_usd||0);item.profit_usd+=Number(row.total_charge_usd||0)-Number(row.total_cost_usd||0);}return Array.from(byDay.values()).map(item=>({...item,cost_usd:Number(item.cost_usd.toFixed(10)),charge_usd:Number(item.charge_usd.toFixed(10)),profit_usd:Number(item.profit_usd.toFixed(10)),margin_percent:item.charge_usd?Number(((item.profit_usd/item.charge_usd)*100).toFixed(2)):0})).sort((a,b)=>b.day.localeCompare(a.day));}
-function calculateBilling(usage,model){const price=getModelPricing(model);const input=Number(usage?.prompt_tokens||0);const output=Number(usage?.completion_tokens||0);const inputCost=input/1000000*Number(price.input_cost_per_1m||0);const outputCost=output/1000000*Number(price.output_cost_per_1m||0);const inputCharge=input/1000000*Number(price.input_sell_per_1m||0);const outputCharge=output/1000000*Number(price.output_sell_per_1m||0);return{input_cost_usd:inputCost,output_cost_usd:outputCost,total_cost_usd:inputCost+outputCost,input_charge_usd:inputCharge,output_charge_usd:outputCharge,total_charge_usd:inputCharge+outputCharge};}
-function estimateTokensFromValue(value){const text=typeof value==="string"?value:JSON.stringify(value??"");return Math.max(1,Math.ceil(text.length/4));}
-function estimateRequestUsage(body){const inputTokens=estimateTokensFromValue(body.messages||body.prompt||"");const requested=Number(body.max_tokens);const outputTokens=Number.isFinite(requested)&&requested>0?requested:1024;return{prompt_tokens:inputTokens,completion_tokens:outputTokens,total_tokens:inputTokens+outputTokens};}
-function estimateRequestCost(body){return calculateBilling(estimateRequestUsage(body),body.model).total_cost_usd;}
-function getRateWindow(customer){const minute=Math.floor(Date.now()/60000);for(const key of RATE_WINDOWS.keys()){const windowMinute=Number(key.split(":").pop());if(!Number.isFinite(windowMinute)||minute-windowMinute>2)RATE_WINDOWS.delete(key);}const key=`${customer.name}:${minute}`;if(!RATE_WINDOWS.has(key))RATE_WINDOWS.set(key,{calls:0,tokens:0,minute});return RATE_WINDOWS.get(key);}
-function limitStatus(customer){const rateLimits=normalizeRateLimits(customer);const window=getRateWindow(customer);const today=summarize(getDayRows(customer.name));const active=[...rateLimits.warning_costs_usd].filter(Number.isFinite).sort((a,b)=>a-b).filter(t=>today.cost_usd>=t).pop()||null;return{rate_limits:rateLimits,current_minute:{calls:window.calls,estimated_tokens:window.tokens},today_cost_usd:Number(today.cost_usd.toFixed(10)),today_charge_usd:Number(today.charge_usd.toFixed(10)),today_profit_usd:Number(today.profit_usd.toFixed(10)),remaining_daily_cost_usd:Number(Math.max(rateLimits.daily_cost_limit_usd-today.cost_usd,0).toFixed(10)),warning:active?{active:true,threshold_usd:active}:{active:false}};}
-function checkUsageLimits(customer,body){const limits=normalizeRateLimits(customer);const window=getRateWindow(customer);const usage=estimateRequestUsage(body);const estimatedCost=estimateRequestCost(body);const today=summarize(getDayRows(customer.name));if(limits.daily_cost_limit_usd>0&&today.cost_usd+estimatedCost>limits.daily_cost_limit_usd)return{ok:false,code:"daily_cost_limit_exceeded",message:"Daily upstream cost limit has been reached. Add balance or raise the daily cost limit before continuing.",extra:{customer:customer.name,daily_cost_limit_usd:limits.daily_cost_limit_usd,current_today_cost_usd:Number(today.cost_usd.toFixed(10)),estimated_request_cost_usd:Number(estimatedCost.toFixed(10))}};if(limits.rpm>0&&window.calls+1>limits.rpm)return{ok:false,code:"rate_limit_exceeded",message:"Request-per-minute limit exceeded. Retry after the current minute window resets.",extra:{customer:customer.name,rpm_limit:limits.rpm,current_minute_calls:window.calls,retry_after_seconds:60}};if(limits.tpm>0&&window.tokens+usage.total_tokens>limits.tpm)return{ok:false,code:"token_rate_limit_exceeded",message:"Token-per-minute limit exceeded. Retry after the current minute window resets.",extra:{customer:customer.name,tpm_limit:limits.tpm,current_minute_estimated_tokens:window.tokens,estimated_request_tokens:usage.total_tokens,retry_after_seconds:60}};window.calls++;window.tokens+=usage.total_tokens;return{ok:true};}
-function profitReport(customerName="OpenRouter"){const month=monthKey();const customer=getCustomers().find(item=>item.name===customerName);const monthRows=getMonthRows(customerName,month);const dayRows=getRecentRows(1,customerName);const weekRows=getRecentRows(7,customerName);return{customer:customerName,month,limits:customer?limitStatus(customer):null,today:summarize(dayRows),week:summarize(weekRows),month_summary:summarize(monthRows),by_model_today:summarizeByModel(dayRows),by_model_week:summarizeByModel(weekRows),by_model_month:summarizeByModel(monthRows)};}
-function getAvailableCredit(customer){return customer.billing_mode!=="postpaid"?0:Number(customer.credit_limit_usd||0)-summarize(getMonthRows(customer.name)).charge_usd;}
-function requireCustomer(req,res){const customer=findCustomer(req);if(!customer)return sendError(res,401,"invalid_api_key","Invalid or missing Tolne API key."),null;if(!customer.enabled)return sendError(res,403,"customer_disabled","Customer account is disabled.",{customer:customer.name}),null;if(customer.billing_mode!=="postpaid"&&Number(customer.balance_usd||0)<=Number(customer.min_balance_usd||0))return sendError(res,402,"insufficient_balance","Customer balance is below the minimum balance.",{customer:customer.name,balance_usd:customer.balance_usd}),null;if(customer.billing_mode==="postpaid"&&customer.credit_limit_usd>0&&getAvailableCredit(customer)<=0)return sendError(res,402,"credit_limit_exceeded","Customer monthly credit limit has been reached.",{customer:customer.name,credit_limit_usd:customer.credit_limit_usd}),null;return customer;}
-function recordUsage(req,requestBody,responseBody){if(!responseBody?.usage)return;const key=parseBearer(req);const customers=getCustomers();const customer=customers.find(item=>item.api_key===key);if(!customer)return;const model=responseBody.model||requestBody.model;const billing=calculateBilling(responseBody.usage,model);if(customer.billing_mode!=="postpaid"){customer.balance_usd=Number((Number(customer.balance_usd||0)-billing.total_charge_usd).toFixed(10));saveCustomers(customers);}appendFileSync(USAGE_LOG_PATH,`${JSON.stringify({timestamp:new Date().toISOString(),customer:customer.name,model,prompt_tokens:responseBody.usage.prompt_tokens||0,completion_tokens:responseBody.usage.completion_tokens||0,total_tokens:responseBody.usage.total_tokens||0,max_tokens:requestBody.max_tokens||null,billing_mode:customer.billing_mode,balance_usd_after:customer.balance_usd,...billing})}\n`,"utf8");}
-function parseStreamingUsage(text,fallbackModel){let usage=null;let model=fallbackModel;for(const line of text.split(/\r?\n/)){if(!line.startsWith("data:"))continue;const data=line.slice(5).trim();if(!data||data==="[DONE]")continue;try{const parsed=JSON.parse(data);if(parsed.model)model=parsed.model;if(parsed.usage)usage=parsed.usage;}catch{}}return usage?{model,usage}:null;}
-function applyModelTokenLimit(body){const price=getModelPricing(body.model);const metadata=modelMetadata(body.model,price);const limit=Number(price.max_output_tokens||metadata.max_output_length||4096);if(!Number.isFinite(limit)||limit<=0)return;const requested=Number(body.max_tokens);if(body.max_tokens===undefined||body.max_tokens===null||!Number.isFinite(requested)||requested<=0)body.max_tokens=Math.min(1024,limit);else if(requested>limit)body.max_tokens=limit;}
-async function proxyChat(req,res,rawBody){if(!process.env.SILICONFLOW_API_KEY)return sendError(res,500,"missing_upstream_key","Missing SILICONFLOW_API_KEY.");let body;try{body=JSON.parse(rawBody||"{}");}catch{return sendError(res,400,"invalid_json","Request body must be valid JSON.");}if(!body.model||!Array.isArray(body.messages))return sendError(res,400,"invalid_chat_request","Request must include model and messages array.");const pricing=getPricing();if(!pricing[body.model]||pricing[body.model].is_ready===false)return sendError(res,404,"model_not_available","This model is not currently available from Tolne.",{model:body.model});applyModelTokenLimit(body);const customer=findCustomer(req);if(!customer)return sendError(res,401,"invalid_api_key","Invalid or missing Tolne API key.");const limitCheck=checkUsageLimits(customer,body);if(!limitCheck.ok)return sendError(res,429,limitCheck.code,limitCheck.message,limitCheck.extra);if(body.stream===true)body.stream_options={...(body.stream_options||{}),include_usage:true};let upstream;try{upstream=await fetch(`${UPSTREAM_BASE_URL}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${process.env.SILICONFLOW_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify(body)});}catch(error){return sendError(res,502,"upstream_network_error","Could not reach upstream provider.",{detail:error.message,model:body.model,customer:customer.name});}const contentType=upstream.headers.get("content-type")||"application/json; charset=utf-8";res.writeHead(upstream.status,{"Content-Type":contentType,"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"Authorization, Content-Type","Access-Control-Allow-Methods":"GET, POST, OPTIONS"});if(contentType.includes("text/event-stream")&&upstream.body){let streamText="";for await(const chunk of upstream.body){streamText+=Buffer.from(chunk).toString("utf8");res.write(chunk);}res.end();if(upstream.ok){const parsed=parseStreamingUsage(streamText,body.model);if(parsed)recordUsage(req,body,parsed);}return;}const text=await upstream.text();if(upstream.ok){try{recordUsage(req,body,JSON.parse(text));}catch{}return res.end(text);}recordError({status:upstream.status,code:"upstream_error",message:"Upstream provider returned an error.",model:body.model,customer:customer.name,extra:{upstream_status:upstream.status,body:text.slice(0,1000)}});try{const parsed=JSON.parse(text);res.end(JSON.stringify({error:{code:"upstream_error",message:"Upstream provider returned an error.",upstream_status:upstream.status,upstream_error:parsed.error||parsed}},null,2));}catch{res.end(JSON.stringify({error:{code:"upstream_error",message:"Upstream provider returned a non-JSON error.",upstream_status:upstream.status,upstream_body:text.slice(0,1000)}},null,2));}}
+function defaultPricing() {
+  return {
+    "deepseek-ai/DeepSeek-V4-Flash": { input_cost_per_1m: 0.14, output_cost_per_1m: 0.28, input_sell_per_1m: 0.2, output_sell_per_1m: 0.4, max_output_tokens: 4096 },
+    "Qwen/Qwen3.5-9B": { input_cost_per_1m: 0.1, output_cost_per_1m: 0.15, input_sell_per_1m: 0.15, output_sell_per_1m: 0.25, max_output_tokens: 4096 },
+    "deepseek-ai/DeepSeek-V3": { input_cost_per_1m: 0.27, output_cost_per_1m: 1, input_sell_per_1m: 0.5, output_sell_per_1m: 2, max_output_tokens: 8192 },
+    "deepseek-ai/DeepSeek-V3.2": { input_cost_per_1m: 0.27, output_cost_per_1m: 0.42, input_sell_per_1m: 0.4, output_sell_per_1m: 0.65, max_output_tokens: 8192 },
+    "Qwen/Qwen3.6-35B-A3B": { input_cost_per_1m: 0.2, output_cost_per_1m: 1.6, input_sell_per_1m: 0.3, output_sell_per_1m: 2.2, max_output_tokens: 8192 }
+  };
+}
 
-function readHealthStatus(){if(!existsSync(HEALTH_STATUS_PATH))return null;try{return JSON.parse(readFileSync(HEALTH_STATUS_PATH,"utf8"));}catch{return null;}}
-function writeHealthStatus(status){writeFileSync(HEALTH_STATUS_PATH,`${JSON.stringify(status,null,2)}\n`,"utf8");}
-async function providerHealthStatus({force=false}={}){const cached=readHealthStatus();if(!force&&cached?.checked_at&&Date.now()-Date.parse(cached.checked_at)<300000)return{...cached,cached:true};const pricing=getPricing();const localModels=Object.entries(pricing);const status={checked_at:new Date().toISOString(),upstream_base_url:UPSTREAM_BASE_URL,upstream_ok:false,upstream_status:null,upstream_error:"",cached:false,models:[]};if(!process.env.SILICONFLOW_API_KEY)status.upstream_error="Missing SILICONFLOW_API_KEY";else{try{const started=Date.now();const response=await fetch(`${UPSTREAM_BASE_URL}/models`,{headers:{Authorization:`Bearer ${process.env.SILICONFLOW_API_KEY}`}});status.upstream_status=response.status;status.latency_ms=Date.now()-started;const text=await response.text();let ids=new Set();try{const parsed=JSON.parse(text);ids=new Set((parsed.data||[]).map(item=>item.id||item.name).filter(Boolean));}catch{status.upstream_error="Upstream /models returned non-JSON.";}status.upstream_ok=response.ok;status.models=localModels.map(([model,price])=>({id:model,local_ready:price.is_ready!==false,upstream_available:ids.size?ids.has(model):null,strategy:price.strategy||"balanced",max_output_tokens:Number(price.max_output_tokens||modelMetadata(model,price).max_output_length||4096),sell_input_per_1m:Number(price.input_sell_per_1m||0),sell_output_per_1m:Number(price.output_sell_per_1m||0)}));}catch(error){status.upstream_error=error.message;}}if(!status.models.length)status.models=localModels.map(([model,price])=>({id:model,local_ready:price.is_ready!==false,upstream_available:null,strategy:price.strategy||"balanced",max_output_tokens:Number(price.max_output_tokens||modelMetadata(model,price).max_output_length||4096)}));writeHealthStatus(status);return status;}
+function sendJson(res, status, payload) {
+  res.writeHead(status, corsHeaders({ "Content-Type": "application/json; charset=utf-8" }));
+  res.end(JSON.stringify(payload, null, 2));
+}
 
-function checkAdmin(req,res){if(!ADMIN_PASSWORD)return true;const expected=`Basic ${Buffer.from(`${ADMIN_USERNAME}:${ADMIN_PASSWORD}`).toString("base64")}`;if(req.headers.authorization===expected)return true;sendText(res,401,"Admin login required",{"WWW-Authenticate":'Basic realm="Tolne Admin"'});return false;}
-function invoiceCsv(customerName,month){const rows=getMonthRows(customerName,month);const header=["timestamp","customer","model","input_tokens","output_tokens","total_tokens","cost_usd","charge_usd","profit_usd"];const data=rows.map(row=>[row.timestamp||"",row.customer||"",row.model||"",row.prompt_tokens||0,row.completion_tokens||0,row.total_tokens||0,Number(row.total_cost_usd||0).toFixed(10),Number(row.total_charge_usd||0).toFixed(10),(Number(row.total_charge_usd||0)-Number(row.total_cost_usd||0)).toFixed(10)]);return[header,...data].map(row=>row.map(cell=>`"${String(cell).replaceAll('"','""')}"`).join(",")).join("\n");}
-function formatUsd(value,digits=8){return`$${Number(value||0).toFixed(digits)}`;}
-function adminPage(title,body){return`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:Arial,sans-serif;background:#eef2f6;color:#111827;margin:0;padding:28px}main{max-width:1200px;margin:auto}section{background:white;border:1px solid #d7dde7;border-radius:8px;padding:18px;margin-bottom:16px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #e5e7eb;padding:10px;text-align:left;vertical-align:top}code,pre{background:#edf3f8;padding:3px 6px;border-radius:5px}pre{white-space:pre-wrap;padding:12px}a{color:#0e766e}button{background:#0f766e;color:white;border:0;border-radius:6px;padding:8px 12px;cursor:pointer}.danger{background:#b91c1c}.muted{color:#64748b}.pill{display:inline-block;border-radius:999px;padding:3px 8px;background:#e2e8f0}.ok{background:#dcfce7;color:#166534}.bad{background:#fee2e2;color:#991b1b}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px}.metric b{display:block;font-size:20px;margin-top:4px}.nav a{display:inline-block;margin:0 12px 8px 0}input,select{padding:8px;border:1px solid #cbd5e1;border-radius:6px}</style></head><body><main><p class="nav"><a href="/admin.html">Admin Home</a><a href="/admin/provider-status.html">Provider Status</a><a href="/admin/daily-report.html">Daily Profit</a><a href="/admin/logs.html">Logs</a><a href="/admin/openrouter-guide.html">OpenRouter Guide</a></p>${body}</main></body></html>`;}
-function sendAdmin(res){const openRouter=getCustomers().find(c=>c.name.toLowerCase()==="openrouter");const month=monthKey();const report=openRouter?profitReport(openRouter.name):profitReport("");const summary=report.month_summary;const modelRows=Object.entries(getPricing()).map(([model,price])=>{const m=modelMetadata(model,price);return`<tr><td><code>${escapeHtml(model)}</code></td><td>${price.is_ready===false?"Disabled":"Enabled"}</td><td>${escapeHtml(price.strategy||"balanced")}</td><td>${Number(price.max_output_tokens||m.max_output_length||0)}</td><td>${usdPerToken(price.input_sell_per_1m)}</td><td>${usdPerToken(price.output_sell_per_1m)}</td><td>${marginPercent(price.input_sell_per_1m,price.input_cost_per_1m)}%</td><td>${marginPercent(price.output_sell_per_1m,price.output_cost_per_1m)}%</td></tr>`;}).join("");const profitRows=(report.by_model_month.length?report.by_model_month:summarizeByModel([])).map(row=>`<tr><td><code>${escapeHtml(row.model)}</code></td><td>${escapeHtml(row.strategy)}</td><td>${row.calls}</td><td>${row.input_tokens}</td><td>${row.output_tokens}</td><td>${formatUsd(row.cost_usd)}</td><td>${formatUsd(row.charge_usd)}</td><td>${formatUsd(row.profit_usd)}</td><td>${row.margin_percent}%</td></tr>`).join("");const limits=report.limits;const limitSection=limits?`<section><h2>Rate Limits</h2><table><tr><th>RPM</th><th>TPM</th><th>Daily Cost Limit</th><th>Today Cost</th><th>Remaining</th><th>Current Minute</th><th>Warning</th></tr><tr><td>${limits.rate_limits.rpm}</td><td>${limits.rate_limits.tpm.toLocaleString()}</td><td>${formatUsd(limits.rate_limits.daily_cost_limit_usd,2)}</td><td>${formatUsd(limits.today_cost_usd,6)}</td><td>${formatUsd(limits.remaining_daily_cost_usd,6)}</td><td>${limits.current_minute.calls} calls / ${limits.current_minute.estimated_tokens.toLocaleString()} est. tokens</td><td>${limits.warning.active?`Reached ${formatUsd(limits.warning.threshold_usd,2)}`:"OK"}</td></tr></table></section>`:"";sendHtml(res,200,adminPage("Tolne OpenRouter",`<h1>Tolne OpenRouter Billing</h1><section><h2>Operations</h2><a href="/admin/provider-status.html">Provider Status</a> <a href="/admin/daily-report.html">Daily Profit</a> <a href="/admin/logs.html">Logs</a> <a href="/admin/openrouter-guide.html">OpenRouter Guide</a> <a href="/admin/profit.json">Profit JSON</a></section><section><h2>Account</h2><table><tr><th>Customer</th><th>Billing</th><th>Credit Limit</th><th>Month Charge</th><th>Month Profit</th></tr><tr><td>${escapeHtml(openRouter?.name||"missing")}</td><td>${escapeHtml(openRouter?.payment_terms||"")}</td><td>$${Number(openRouter?.credit_limit_usd||0).toFixed(2)}</td><td>${formatUsd(summary.charge_usd)}</td><td>${formatUsd(summary.profit_usd)}</td></tr></table></section><section><h2>Profit Snapshot</h2><div class="grid"><div class="metric"><span class="muted">Today calls</span><b>${report.today.calls}</b></div><div class="metric"><span class="muted">Today profit</span><b>${formatUsd(report.today.profit_usd)}</b></div><div class="metric"><span class="muted">7 day profit</span><b>${formatUsd(report.week.profit_usd)}</b></div><div class="metric"><span class="muted">Month profit</span><b>${formatUsd(summary.profit_usd)}</b></div></div></section>${limitSection}<section><h2>Model Profit This Month</h2><table><thead><tr><th>Model</th><th>Strategy</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost</th><th>Charge</th><th>Profit</th><th>Margin</th></tr></thead><tbody>${profitRows||`<tr><td colspan="9" class="muted">No usage yet.</td></tr>`}</tbody></table></section><section><h2>Prices And Risk Limits</h2><table><thead><tr><th>Model</th><th>Status</th><th>Strategy</th><th>Max Output</th><th>Input/token</th><th>Output/token</th><th>Input Margin</th><th>Output Margin</th></tr></thead><tbody>${modelRows}</tbody></table></section><section><h2>Invoice</h2><p><a href="/admin/invoice.csv?customer=OpenRouter&month=${month}">Download ${month} CSV invoice</a></p></section>`));}
-async function sendProviderStatus(res,force=false){const status=await providerHealthStatus({force});const rows=status.models.map(model=>`<tr><td><code>${escapeHtml(model.id)}</code></td><td><span class="pill ${model.local_ready?"ok":"bad"}">${model.local_ready?"Enabled":"Disabled"}</span></td><td>${model.upstream_available===null?"Unknown":`<span class="pill ${model.upstream_available?"ok":"bad"}">${model.upstream_available?"Available":"Missing"}</span>`}</td><td>${escapeHtml(model.strategy)}</td><td>${model.max_output_tokens}</td><td><form method="post" action="/admin/models/toggle"><input type="hidden" name="model" value="${escapeHtml(model.id)}"><input type="hidden" name="enabled" value="${model.local_ready?"false":"true"}"><button class="${model.local_ready?"danger":""}" type="submit">${model.local_ready?"Disable":"Enable"}</button></form></td></tr>`).join("");sendHtml(res,200,adminPage("Provider Status",`<h1>Provider Status</h1><section><h2>Health Check</h2><p>Checked at: <code>${escapeHtml(status.checked_at)}</code></p><p>Upstream: <code>${escapeHtml(status.upstream_base_url)}</code></p><p>Status: <span class="pill ${status.upstream_ok?"ok":"bad"}">${status.upstream_ok?"OK":"Problem"}</span> ${status.upstream_status?`HTTP ${status.upstream_status}`:""} ${status.latency_ms?`${status.latency_ms}ms`:""}</p>${status.upstream_error?`<p class="bad pill">${escapeHtml(status.upstream_error)}</p>`:""}<p><a href="/admin/provider-status.html?refresh=1">Run health check now</a> <span class="muted">Auto refreshes every 5 minutes by cache.</span></p></section><section><h2>Model Availability Switches</h2><table><thead><tr><th>Model</th><th>Tolne</th><th>Upstream</th><th>Strategy</th><th>Max Output</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></section>`));}
-function sendDailyReport(res,url){const days=Number(url.searchParams.get("days")||14);const customer=url.searchParams.get("customer")||"OpenRouter";const rows=dailyProfitReport(customer,days).map(row=>`<tr><td>${row.day}</td><td>${row.calls}</td><td>${row.input_tokens}</td><td>${row.output_tokens}</td><td>${formatUsd(row.cost_usd)}</td><td>${formatUsd(row.charge_usd)}</td><td>${formatUsd(row.profit_usd)}</td><td>${row.margin_percent}%</td></tr>`).join("");sendHtml(res,200,adminPage("Daily Profit",`<h1>Daily Profit Report</h1><section><form method="get"><label>Days <input name="days" value="${days}"></label> <label>Customer <input name="customer" value="${escapeHtml(customer)}"></label> <button type="submit">Apply</button></form></section><section><table><thead><tr><th>Day</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost</th><th>Charge</th><th>Profit</th><th>Margin</th></tr></thead><tbody>${rows||`<tr><td colspan="8" class="muted">No usage yet.</td></tr>`}</tbody></table></section>`));}
-function sendLogs(res,url){const type=url.searchParams.get("type")||"error";const q=url.searchParams.get("q")||"";const days=Number(url.searchParams.get("days")||7);const rows=filterRows(type==="usage"?readUsageRows():readErrorRows(),{q,days,limit:100});const stats=errorStats(days);const tableRows=rows.map(row=>`<tr><td>${escapeHtml(row.timestamp||"")}</td><td><code>${escapeHtml(row.code||row.model||"")}</code></td><td>${escapeHtml(row.customer||"")}</td><td>${escapeHtml(row.model||"")}</td><td><pre>${escapeHtml(JSON.stringify(row,null,2))}</pre></td></tr>`).join("");const statRows=stats.by_code.slice(0,8).map(item=>`<tr><td><code>${escapeHtml(item.key)}</code></td><td>${item.count}</td></tr>`).join("");sendHtml(res,200,adminPage("Logs",`<h1>Log Search</h1><section><form method="get"><label>Type <select name="type"><option value="error" ${type==="error"?"selected":""}>Errors</option><option value="usage" ${type==="usage"?"selected":""}>Usage</option></select></label> <label>Search <input name="q" value="${escapeHtml(q)}"></label> <label>Days <input name="days" value="${days}"></label> <button type="submit">Search</button></form></section><section><h2>Error Stats</h2><p>Total errors in ${days} days: <b>${stats.total}</b></p><table><tr><th>Code</th><th>Count</th></tr>${statRows||`<tr><td colspan="2" class="muted">No errors.</td></tr>`}</table></section><section><h2>Rows</h2><table><thead><tr><th>Time</th><th>Code/Model</th><th>Customer</th><th>Model</th><th>Raw</th></tr></thead><tbody>${tableRows||`<tr><td colspan="5" class="muted">No matching logs.</td></tr>`}</tbody></table></section>`));}
-function sendOpenRouterGuide(res){const prices=Object.entries(getPricing()).map(([model,price])=>`<tr><td><code>${escapeHtml(model)}</code></td><td>${usdPerToken(price.input_sell_per_1m)}</td><td>${usdPerToken(price.output_sell_per_1m)}</td><td>${Number(price.max_output_tokens||modelMetadata(model,price).max_output_length||4096)}</td><td>${price.is_ready===false?"No":"Yes"}</td></tr>`).join("");sendHtml(res,200,adminPage("OpenRouter Guide",`<h1>OpenRouter Provider Guide</h1><section><h2>Endpoint URLs</h2><p>Base URL: <code>${escapeHtml(PUBLIC_BASE_URL)}/v1</code></p><p>Models: <code>${escapeHtml(PUBLIC_BASE_URL)}/v1/models</code></p><p>Chat Completions: <code>${escapeHtml(PUBLIC_BASE_URL)}/v1/chat/completions</code></p><p>Completions: <code>${escapeHtml(PUBLIC_BASE_URL)}/v1/completions</code></p></section><section><h2>Requirements Implemented</h2><ul><li>OpenAI-compatible chat completions endpoint.</li><li>Streaming with usage enabled through <code>stream_options.include_usage</code>.</li><li>Usage tokens recorded for billing and reports.</li><li>Public pricing returned per token in <code>/v1/models</code>.</li><li>Admin-only cost, profit, logs, and model switches.</li></ul></section><section><h2>Model Pricing For OpenRouter</h2><table><thead><tr><th>Model</th><th>Input USD/token</th><th>Output USD/token</th><th>Max Output</th><th>Ready</th></tr></thead><tbody>${prices}</tbody></table></section>`));}
-async function handleModelToggle(req,res){const params=new URLSearchParams(await readBody(req));const model=params.get("model")||"";const enabled=params.get("enabled")==="true";const pricing=getPricing();if(!pricing[model])return sendError(res,404,"model_not_found","Model does not exist in Tolne pricing.",{model});pricing[model].is_ready=enabled;savePricing(pricing);res.writeHead(303,{Location:"/admin/provider-status.html?refresh=1"});res.end("Updated");}
-function sendPrivacy(res){sendHtml(res,200,`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tolne Privacy Policy</title><style>body{font-family:Arial,sans-serif;background:#f4f7fb;color:#111827;margin:0;line-height:1.6}main{max-width:860px;margin:0 auto;padding:40px 22px}section{background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:22px;margin:16px 0}a{color:#0f766e}</style></head><body><main><h1>Tolne Privacy Policy</h1><p>Last updated: May 25, 2026</p><section><h2>Overview</h2><p>Tolne provides an OpenAI-compatible inference API gateway.</p></section><section><h2>Data We Process</h2><p>Tolne may process request metadata, model identifiers, timestamps, customer identifiers, token usage, request status, billing amounts, prompts, and completions as needed to deliver the service.</p></section><section><h2>Training Policy</h2><p>Tolne does not use customer prompts or completions to train models.</p></section><section><h2>Contact</h2><p><a href="mailto:arlindbrahimiei6@gmail.com">arlindbrahimiei6@gmail.com</a></p></section></main></body></html>`);}
+function sendText(res, status, text, headers = {}) {
+  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", ...headers });
+  res.end(text);
+}
 
-const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,`http://${req.headers.host}`);if(req.method==="OPTIONS")return sendJson(res,200,{});if(url.pathname==="/health")return sendJson(res,200,{ok:true,upstream:UPSTREAM_BASE_URL});if(req.method==="GET"&&url.pathname==="/privacy")return sendPrivacy(res);if(url.pathname.startsWith("/admin")&&!checkAdmin(req,res))return;if(req.method==="POST"&&url.pathname==="/admin/models/toggle")return await handleModelToggle(req,res);if(req.method==="GET"&&url.pathname==="/admin/debug-config")return sendJson(res,200,{data_dir:DATA_DIR,has_siliconflow_key:Boolean(process.env.SILICONFLOW_API_KEY),tolne_api_key:maskSecret(process.env.TOLNE_API_KEY||""),openrouter_api_key:maskSecret(process.env.OPENROUTER_API_KEY||""),customers:getCustomers().map(c=>({name:c.name,key:maskSecret(c.api_key||""),billing_mode:c.billing_mode,credit_limit_usd:c.credit_limit_usd,rate_limits:c.rate_limits,enabled:c.enabled}))});if(req.method==="GET"&&url.pathname==="/admin/provider-status.json")return sendJson(res,200,await providerHealthStatus({force:url.searchParams.get("refresh")==="1"}));if(req.method==="GET"&&url.pathname==="/admin/provider-status.html")return await sendProviderStatus(res,url.searchParams.get("refresh")==="1");if(req.method==="GET"&&url.pathname==="/admin/daily-report.json"){const customer=url.searchParams.get("customer")||"OpenRouter";const days=Number(url.searchParams.get("days")||14);return sendJson(res,200,{customer,days,data:dailyProfitReport(customer,days)});}if(req.method==="GET"&&url.pathname==="/admin/daily-report.html")return sendDailyReport(res,url);if(req.method==="GET"&&url.pathname==="/admin/logs.json"){const type=url.searchParams.get("type")||"error";const q=url.searchParams.get("q")||"";const days=Number(url.searchParams.get("days")||7);return sendJson(res,200,{type,q,days,stats:errorStats(days),rows:filterRows(type==="usage"?readUsageRows():readErrorRows(),{q,days,limit:Number(url.searchParams.get("limit")||100)})});}if(req.method==="GET"&&url.pathname==="/admin/logs.html")return sendLogs(res,url);if(req.method==="GET"&&url.pathname==="/admin/openrouter-guide.html")return sendOpenRouterGuide(res);if(req.method==="GET"&&url.pathname==="/admin/profit.json")return sendJson(res,200,profitReport(url.searchParams.get("customer")||"OpenRouter"));if(req.method==="GET"&&(url.pathname==="/admin.html"||url.pathname==="/admin/openrouter.html"))return sendAdmin(res);if(req.method==="GET"&&url.pathname==="/admin/invoice.csv"){const customer=url.searchParams.get("customer")||"OpenRouter";const month=url.searchParams.get("month")||monthKey();return sendText(res,200,invoiceCsv(customer,month),{"Content-Type":"text/csv; charset=utf-8","Content-Disposition":`attachment; filename="tolne-${customer}-${month}-invoice.csv"`});}if(req.method==="GET"&&url.pathname==="/models.html")return sendJson(res,200,modelsPayload());const customer=requireCustomer(req,res);if(!customer)return;if(req.method==="GET"&&url.pathname==="/v1/models")return sendJson(res,200,modelsPayload());if(req.method==="POST"&&(url.pathname==="/v1/chat/completions"||url.pathname==="/v1/completions")){const rawBody=await readBody(req);if(url.pathname==="/v1/completions"){const completionBody=JSON.parse(rawBody||"{}");completionBody.messages=[{role:"user",content:String(completionBody.prompt||"")}];await proxyChat(req,res,JSON.stringify(completionBody));}else await proxyChat(req,res,rawBody);return;}sendError(res,404,"not_found","Route not found.");}catch(error){sendError(res,500,"server_error","Tolne server error.",{detail:error.message});}});
-server.listen(PORT,()=>console.log(`Tolne API listening on http://localhost:${PORT}`));
+function sendHtml(res, status, html) {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
+}
+
+function corsHeaders(headers = {}) {
+  return {
+    ...headers,
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+  };
+}
+
+function contentType(fileName) {
+  if (fileName.endsWith(".html")) return "text/html; charset=utf-8";
+  if (fileName.endsWith(".css")) return "text/css; charset=utf-8";
+  if (fileName.endsWith(".js")) return "text/javascript; charset=utf-8";
+  return "application/octet-stream";
+}
+
+function sendPublicFile(res, fileName) {
+  const filePath = path.join(PUBLIC_DIR, fileName);
+  if (!existsSync(filePath)) return false;
+  res.writeHead(200, {
+    "Content-Type": contentType(fileName),
+    "Cache-Control": fileName === "index.html" ? "no-cache" : "public, max-age=300"
+  });
+  res.end(readFileSync(filePath));
+  return true;
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 10 * 1024 * 1024) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function parseBearer(req) {
+  const auth = req.headers.authorization || "";
+  return auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+}
+
+function configuredCustomers() {
+  const customers = [];
+  if (process.env.TOLNE_API_KEY) {
+    customers.push({ name: "test-customer", api_key: process.env.TOLNE_API_KEY, billing_mode: "prepaid", balance_usd: 1, enabled: true });
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    customers.push({
+      name: "OpenRouter",
+      api_key: process.env.OPENROUTER_API_KEY,
+      billing_mode: "postpaid",
+      balance_usd: 0,
+      credit_limit_usd: Number(process.env.OPENROUTER_CREDIT_LIMIT_USD || 3000),
+      enabled: true
+    });
+  }
+  return customers;
+}
+
+function getCustomers() {
+  let customers = [];
+  if (existsSync(CUSTOMERS_PATH)) {
+    customers = JSON.parse(readFileSync(CUSTOMERS_PATH, "utf8"));
+  }
+  for (const configured of configuredCustomers()) {
+    const existing = customers.find((customer) => customer.name === configured.name || customer.api_key === configured.api_key);
+    if (!existing) customers.push(configured);
+    else Object.assign(existing, configured);
+  }
+  writeFileSync(CUSTOMERS_PATH, `${JSON.stringify(customers, null, 2)}\n`, "utf8");
+  return customers;
+}
+
+function findCustomer(req) {
+  const key = parseBearer(req);
+  if (!key) return null;
+  return getCustomers().find((customer) => customer.api_key === key && customer.enabled !== false) || null;
+}
+
+function requireCustomer(req, res) {
+  const customer = findCustomer(req);
+  if (!customer) {
+    sendError(res, 401, "invalid_api_key", "Invalid or missing Necto API key.");
+    return null;
+  }
+  return customer;
+}
+
+function getPricing() {
+  return existsSync(PRICING_PATH) ? JSON.parse(readFileSync(PRICING_PATH, "utf8")) : defaultPricing();
+}
+
+function usdPerToken(pricePer1m) {
+  return (Number(pricePer1m || 0) / 1000000).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function modelName(model) {
+  return `Necto: ${model.split("/").pop().replaceAll("-", " ")}`;
+}
+
+function modelsPayload() {
+  return {
+    object: "list",
+    data: Object.entries(getPricing())
+      .filter(([, price]) => price.is_ready !== false)
+      .map(([model, price]) => ({
+        id: model,
+        name: modelName(model),
+        object: "model",
+        created: 0,
+        owned_by: "necto",
+        is_ready: true,
+        supports_streaming: true,
+        hugging_face_id: model,
+        input_modalities: ["text"],
+        output_modalities: ["text"],
+        context_length: model.includes("DeepSeek-V3") ? 64000 : 32768,
+        max_output_length: Number(price.max_output_tokens || 4096),
+        supported_sampling_parameters: ["temperature", "top_p", "stop", "max_tokens", "seed"],
+        pricing: {
+          prompt: usdPerToken(price.input_sell_per_1m),
+          completion: usdPerToken(price.output_sell_per_1m),
+          request: "0",
+          image: "0",
+          input_cache_read: "0"
+        },
+        datacenters: [{ country_code: "US" }]
+      }))
+  };
+}
+
+function calculateBilling(usage, model) {
+  const price = getPricing()[model] || {};
+  const input = Number(usage?.prompt_tokens || 0);
+  const output = Number(usage?.completion_tokens || 0);
+  const inputCost = input / 1000000 * Number(price.input_cost_per_1m || 0);
+  const outputCost = output / 1000000 * Number(price.output_cost_per_1m || 0);
+  const inputCharge = input / 1000000 * Number(price.input_sell_per_1m || 0);
+  const outputCharge = output / 1000000 * Number(price.output_sell_per_1m || 0);
+  return {
+    input_cost_usd: inputCost,
+    output_cost_usd: outputCost,
+    total_cost_usd: inputCost + outputCost,
+    input_charge_usd: inputCharge,
+    output_charge_usd: outputCharge,
+    total_charge_usd: inputCharge + outputCharge
+  };
+}
+
+function recordUsage(customer, requestBody, responseBody) {
+  if (!responseBody?.usage) return;
+  const model = responseBody.model || requestBody.model;
+  appendFileSync(USAGE_LOG_PATH, `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    customer: customer.name,
+    model,
+    prompt_tokens: responseBody.usage.prompt_tokens || 0,
+    completion_tokens: responseBody.usage.completion_tokens || 0,
+    total_tokens: responseBody.usage.total_tokens || 0,
+    ...calculateBilling(responseBody.usage, model)
+  })}\n`, "utf8");
+}
+
+function recordError(payload) {
+  try {
+    appendFileSync(ERROR_LOG_PATH, `${JSON.stringify({ timestamp: new Date().toISOString(), ...payload })}\n`, "utf8");
+  } catch {}
+}
+
+function sendError(res, status, code, message, extra = {}) {
+  recordError({ status, code, message, extra });
+  sendJson(res, status, { error: { code, message, ...extra } });
+}
+
+function parseStreamingUsage(text, fallbackModel) {
+  let usage = null;
+  let model = fallbackModel;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed.model) model = parsed.model;
+      if (parsed.usage) usage = parsed.usage;
+    } catch {}
+  }
+  return usage ? { model, usage } : null;
+}
+
+async function proxyChat(req, res, rawBody, customer) {
+  if (!process.env.SILICONFLOW_API_KEY) {
+    sendError(res, 500, "missing_upstream_key", "Missing SILICONFLOW_API_KEY.");
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(rawBody || "{}");
+  } catch {
+    sendError(res, 400, "invalid_json", "Request body must be valid JSON.");
+    return;
+  }
+  if (!body.model || !Array.isArray(body.messages)) {
+    sendError(res, 400, "invalid_chat_request", "Request must include model and messages array.");
+    return;
+  }
+  const price = getPricing()[body.model];
+  if (!price || price.is_ready === false) {
+    sendError(res, 404, "model_not_available", "This model is not currently available from Necto.", { model: body.model });
+    return;
+  }
+  const maxOutput = Number(price.max_output_tokens || 4096);
+  if (!body.max_tokens || Number(body.max_tokens) > maxOutput) body.max_tokens = maxOutput;
+  if (body.stream === true) body.stream_options = { ...(body.stream_options || {}), include_usage: true };
+
+  let upstream;
+  try {
+    upstream = await fetch(`${UPSTREAM_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.SILICONFLOW_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    sendError(res, 502, "upstream_network_error", "Could not reach upstream provider.", { detail: error.message });
+    return;
+  }
+
+  const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
+  res.writeHead(upstream.status, corsHeaders({ "Content-Type": contentType }));
+  if (contentType.includes("text/event-stream") && upstream.body) {
+    let streamText = "";
+    for await (const chunk of upstream.body) {
+      const text = Buffer.from(chunk).toString("utf8");
+      streamText += text;
+      res.write(text);
+    }
+    res.end();
+    if (upstream.ok) {
+      const parsed = parseStreamingUsage(streamText, body.model);
+      if (parsed) recordUsage(customer, body, parsed);
+    }
+    return;
+  }
+  const text = await upstream.text();
+  if (upstream.ok) {
+    try {
+      recordUsage(customer, body, JSON.parse(text));
+    } catch {}
+  }
+  res.end(text);
+}
+
+function checkAdmin(req, res) {
+  if (!ADMIN_PASSWORD) return true;
+  const expected = `Basic ${Buffer.from(`${ADMIN_USERNAME}:${ADMIN_PASSWORD}`).toString("base64")}`;
+  if (req.headers.authorization === expected) return true;
+  sendText(res, 401, "Admin login required", { "WWW-Authenticate": 'Basic realm="Necto Admin"' });
+  return false;
+}
+
+function readUsageRows() {
+  if (!existsSync(USAGE_LOG_PATH)) return [];
+  return readFileSync(USAGE_LOG_PATH, "utf8").split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function adminPage(res) {
+  const rows = readUsageRows();
+  const total = rows.reduce((sum, row) => sum + Number(row.total_charge_usd || 0), 0);
+  sendHtml(res, 200, `<!doctype html><html><head><meta charset="utf-8"><title>Necto Admin</title><style>body{font-family:Arial,sans-serif;background:#eef2f6;color:#111827;margin:0;padding:28px}main{max-width:1100px;margin:auto}section{background:white;border:1px solid #d7dde7;border-radius:8px;padding:18px;margin-bottom:16px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #e5e7eb;padding:10px;text-align:left}code{background:#edf3f8;padding:3px 6px;border-radius:5px}a{color:#0e766e}</style></head><body><main><h1>Necto Admin</h1><section><h2>Status</h2><p>Usage rows: <b>${rows.length}</b></p><p>Total charge logged: <b>$${total.toFixed(8)}</b></p><p><a href="/v1/models">View /v1/models</a></p></section></main></body></html>`);
+}
+
+function privacyPage(res) {
+  sendHtml(res, 200, `<!doctype html><html><head><meta charset="utf-8"><title>Necto Privacy Policy</title><style>body{font-family:Arial,sans-serif;background:#f4f7fb;color:#111827;margin:0;line-height:1.6}main{max-width:860px;margin:0 auto;padding:40px 22px}section{background:#fff;border:1px solid #dce3ec;border-radius:8px;padding:22px;margin:16px 0}a{color:#0f766e}</style></head><body><main><h1>Necto Privacy Policy</h1><p>Last updated: May 25, 2026</p><section><h2>Overview</h2><p>Necto provides an OpenAI-compatible inference API gateway.</p></section><section><h2>Training Policy</h2><p>Necto does not use customer prompts or completions to train models.</p></section><section><h2>Contact</h2><p><a href="mailto:arlindbrahimiei6@gmail.com">arlindbrahimiei6@gmail.com</a></p></section></main></body></html>`);
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (req.method === "OPTIONS") return sendJson(res, 200, {});
+    if (url.pathname === "/health") return sendJson(res, 200, { ok: true, upstream: UPSTREAM_BASE_URL });
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+      if (sendPublicFile(res, "index.html")) return;
+    }
+    if (req.method === "GET" && url.pathname === "/styles.css") {
+      if (sendPublicFile(res, "styles.css")) return;
+    }
+    if (req.method === "GET" && url.pathname === "/script.js") {
+      if (sendPublicFile(res, "script.js")) return;
+    }
+    if (req.method === "GET" && url.pathname === "/privacy") return privacyPage(res);
+    if (url.pathname.startsWith("/admin") && !checkAdmin(req, res)) return;
+    if (req.method === "GET" && (url.pathname === "/admin.html" || url.pathname === "/admin")) return adminPage(res);
+    if (req.method === "GET" && (url.pathname === "/v1/models" || url.pathname === "/models.html")) return sendJson(res, 200, modelsPayload());
+
+    const customer = requireCustomer(req, res);
+    if (!customer) return;
+    if (req.method === "POST" && (url.pathname === "/v1/chat/completions" || url.pathname === "/v1/completions")) {
+      const rawBody = await readBody(req);
+      if (url.pathname === "/v1/completions") {
+        const completionBody = JSON.parse(rawBody || "{}");
+        completionBody.messages = [{ role: "user", content: String(completionBody.prompt || "") }];
+        await proxyChat(req, res, JSON.stringify(completionBody), customer);
+      } else {
+        await proxyChat(req, res, rawBody, customer);
+      }
+      return;
+    }
+    sendError(res, 404, "not_found", "Route not found.");
+  } catch (error) {
+    sendError(res, 500, "server_error", "Necto server error.", { detail: error.message });
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`Necto API listening on http://localhost:${PORT}`);
+});
