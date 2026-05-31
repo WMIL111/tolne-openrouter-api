@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Necto - OpenAI-compatible AI gateway</title>
+    <meta
+      name="description"
+      content="Necto is a low-cost OpenAI-compatible API gateway for indie AI apps, small teams, and builders who need model routing, usage tracking, and simple billing."
+    >
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    >
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Necto home">
+        <span class="brand-mark">N</span>
+        <span>Necto</span>
+      </a>
+      <nav class="nav-links" aria-label="Main navigation">
+        <a href="#models">Models</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#docs">Docs</a>
+      </nav>
+      <div class="nav-actions">
+        <a class="ghost-link" href="#docs">Docs</a>
+        <a class="ghost-link" href="/login.html">Login</a>
+        <a class="button button-dark" href="#waitlist">Get API key</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-visual" aria-hidden="true">
+          <div class="terminal terminal-main">
+            <div class="terminal-bar">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <pre><code>curl https://api.tolne.ai/v1/chat/completions \
+  -H "Authorization: Bearer $NECTO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "messages": [
+      {"role": "user", "content": "Write a launch email"}
+    ]
+  }'</code></pre>
+          </div>
+
+          <div class="metric-panel panel-cost">
+            <span>Cost today</span>
+            <strong>$4.82</strong>
+            <small>18,420 requests</small>
+          </div>
+
+          <div class="metric-panel panel-route">
+            <span>Routing</span>
+            <strong>3 models</strong>
+            <small>Qwen, DeepSeek, fallback</small>
+          </div>
+
+          <div class="response-panel">
+            <div class="response-line is-green"></div>
+            <div class="response-line"></div>
+            <div class="response-line is-short"></div>
+            <div class="response-stat">
+              <b>142 ms</b>
+              <span>gateway latency</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-content">
+          <p class="eyebrow">OpenAI-compatible API gateway</p>
+          <h1 id="hero-title">Cheaper model access for indie AI apps.</h1>
+          <p class="hero-copy">
+            Route requests to affordable LLM providers through one clean API,
+            with usage tracking, customer keys, rate limits, and billing built in.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-light" href="#waitlist">Get API key</a>
+            <a class="button button-outline" href="#docs">View docs</a>
+            <a class="button button-outline" href="/login.html">Client login</a>
+          </div>
+          <div class="hero-proof" aria-label="Product highlights">
+            <span>OpenAI SDK compatible</span>
+            <span>Usage logs</span>
+            <span>Multi-model routing</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="signal-strip" aria-label="Necto quick metrics">
+        <div>
+          <strong>1 endpoint</strong>
+          <span>Swap providers without changing app code.</span>
+        </div>
+        <div>
+          <strong>Per-key limits</strong>
+          <span>Control customers, teams, and credits.</span>
+        </div>
+        <div>
+          <strong>Logs by default</strong>
+          <span>See spend, requests, models, and errors.</span>
+        </div>
+      </section>
+
+      <section class="section" id="models">
+        <div class="section-heading">
+          <p class="eyebrow">Built for builders</p>
+          <h2>Everything an AI app needs before it starts leaking money.</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span class="feature-icon">01</span>
+            <h3>OpenAI-compatible</h3>
+            <p>Keep using the same chat completions format, SDK patterns, and model parameters your app already knows.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">02</span>
+            <h3>Provider routing</h3>
+            <p>Send traffic to lower-cost models and keep fallbacks ready when one provider slows down or fails.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">03</span>
+            <h3>Customer keys</h3>
+            <p>Create keys for clients or products, assign limits, and track spend without exposing upstream credentials.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">04</span>
+            <h3>Usage visibility</h3>
+            <p>Know which users, prompts, and models are burning credits before the cloud bill surprises you.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="workflow" id="workflow">
+        <div class="workflow-copy">
+          <p class="eyebrow">From prototype to paid users</p>
+          <h2>Ship AI features without rebuilding your billing stack.</h2>
+          <p>
+            Necto sits between your app and your model providers. Your app calls Necto,
+            Necto routes the request, records usage, applies limits, and returns an
+            OpenAI-style response.
+          </p>
+        </div>
+        <div class="flow" aria-label="Necto workflow">
+          <div class="flow-node">Your app</div>
+          <div class="flow-connector"></div>
+          <div class="flow-node is-active">Necto gateway</div>
+          <div class="flow-connector"></div>
+          <div class="flow-stack">
+            <span>Qwen</span>
+            <span>DeepSeek</span>
+            <span>Fallback</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section code-section" id="docs">
+        <div class="section-heading docs-heading">
+          <p class="eyebrow">Developer console</p>
+          <h2>Test routing, model choice, and response shape in one live surface.</h2>
+        </div>
+
+        <div class="docs-grid">
+          <div class="api-console">
+            <div class="console-topline">
+              <div class="terminal-bar compact">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <div class="console-status">
+                <span class="status-dot"></span>
+                <span>Gateway ready</span>
+              </div>
+              <span id="route-latency" class="latency-pill">180 ms</span>
+            </div>
+
+            <div class="code-tabs" role="tablist" aria-label="Code examples">
+              <button class="code-tab is-active" type="button" data-code="node">Node</button>
+              <button class="code-tab" type="button" data-code="python">Python</button>
+              <button class="code-tab" type="button" data-code="curl">cURL</button>
+            </div>
+
+            <div class="docs-controls" aria-label="API controls">
+              <div class="control-group">
+                <span>Model</span>
+                <div class="segmented-control" role="group" aria-label="Model">
+                  <button class="segment is-active" type="button" data-model="deepseek-ai/DeepSeek-V4-Flash">V4 Flash</button>
+                  <button class="segment" type="button" data-model="Qwen/Qwen3.5-9B">Qwen 9B</button>
+                  <button class="segment" type="button" data-model="deepseek-ai/DeepSeek-V3">V3</button>
+                </div>
+              </div>
+              <div class="control-group">
+                <span>Mode</span>
+                <div class="segmented-control" role="group" aria-label="Mode">
+                  <button class="segment is-active" type="button" data-mode="stream">Stream</button>
+                  <button class="segment" type="button" data-mode="json">JSON</button>
+                </div>
+              </div>
+              <button class="copy-code" id="copy-code" type="button">Copy</button>
+            </div>
+
+            <pre class="code-block"><code id="code-example"></code></pre>
+          </div>
+
+          <aside class="docs-side" aria-label="Live API status">
+            <article class="live-card route-card">
+              <div class="card-kicker">Provider route</div>
+              <div class="route-map">
+                <span>App</span>
+                <div class="route-line"></div>
+                <span>Necto</span>
+                <div class="route-line"></div>
+                <span id="route-model">V4 Flash</span>
+              </div>
+            </article>
+
+            <article class="live-card metrics-card">
+              <div class="card-kicker">Estimated request</div>
+              <dl class="metrics-list">
+                <div><dt>Model</dt><dd id="active-model">DeepSeek V4 Flash</dd></div>
+                <div><dt>Input</dt><dd id="est-input">900 tokens</dd></div>
+                <div><dt>Output</dt><dd id="est-output">1,210 tokens</dd></div>
+                <div><dt>Cost</dt><dd id="est-cost">$0.00066</dd></div>
+              </dl>
+            </article>
+
+            <article class="live-card response-card">
+              <div class="response-head">
+                <span id="response-status">200 OK</span>
+                <span>usage returned</span>
+              </div>
+              <div class="response-preview" id="response-preview"><span></span><span></span><span></span></div>
+            </article>
+          </aside>
+        </div>
+
+        <div class="docs-events" aria-label="Gateway activity">
+          <div class="event-row is-active"><span>usage</span><strong>prompt_tokens + completion_tokens returned</strong></div>
+          <div class="event-row"><span>limits</span><strong>customer key checked before upstream call</strong></div>
+          <div class="event-row"><span>routing</span><strong>fallback model remains available</strong></div>
+          <div class="event-row"><span>profit</span><strong>request cost estimated before it scales</strong></div>
+        </div>
+      </section>
+
+      <section class="pricing" id="pricing" aria-labelledby="pricing-title">
+        <div class="pricing-copy">
+          <p class="eyebrow">Simple pricing</p>
+          <h2 id="pricing-title">Start small. Upgrade when requests become revenue.</h2>
+        </div>
+        <div class="pricing-grid">
+          <article class="price-card"><h3>Starter</h3><p>For prototypes and small tools.</p><strong>$9<span>/mo</span></strong><ul><li>1 project</li><li>100k gateway requests</li><li>Usage dashboard</li></ul><a class="button button-outline-dark" href="#waitlist">Start</a></article>
+          <article class="price-card is-featured"><h3>Builder</h3><p>For paid AI apps and client work.</p><strong>$29<span>/mo</span></strong><ul><li>5 projects</li><li>Customer API keys</li><li>Rate limits and credits</li></ul><a class="button button-dark" href="#waitlist">Choose Builder</a></article>
+          <article class="price-card"><h3>Scale</h3><p>For teams routing serious traffic.</p><strong>Custom</strong><ul><li>Higher limits</li><li>Private provider routing</li><li>Priority support</li></ul><a class="button button-outline-dark" href="#waitlist">Talk to us</a></article>
+        </div>
+      </section>
+
+      <section class="waitlist" id="waitlist">
+        <div><p class="eyebrow">Beta access</p><h2>Get early access to Necto.</h2><p>Join the beta list for API keys, docs, and launch pricing.</p></div>
+        <form class="waitlist-form">
+          <label for="email">Work email</label>
+          <div class="form-row"><input id="email" name="email" type="email" placeholder="founder@example.com" required><button class="button button-dark" type="submit">Join beta</button></div>
+          <p class="form-note" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </main>
+
+    <footer class="site-footer"><span>Necto</span><span>Low-cost AI infrastructure for builders.</span></footer>
+    <script src="script.js"></script>
+  </body>
+</html>
